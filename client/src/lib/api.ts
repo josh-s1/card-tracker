@@ -1,0 +1,74 @@
+const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+
+let currentPin = "";
+export function setPin(pin: string) {
+  currentPin = pin;
+}
+export function getPin() {
+  return currentPin;
+}
+
+export class LockedError extends Error {
+  constructor() {
+    super("locked");
+    this.name = "LockedError";
+  }
+}
+
+export async function apiJson<T = any>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      "x-app-pin": currentPin,
+      ...(init?.headers ?? {}),
+    },
+  });
+  if (res.status === 401) throw new LockedError();
+  if (!res.ok) {
+    const text = (await res.text()) || res.statusText;
+    throw new Error(text);
+  }
+  return res.json();
+}
+
+export const api = {
+  config: () => apiJson("/api/config"),
+  state: () => apiJson("/api/state"),
+  linkToken: () => apiJson("/api/plaid/link-token", { method: "POST" }),
+  exchange: (publicToken: string) =>
+    apiJson("/api/plaid/exchange", {
+      method: "POST",
+      body: JSON.stringify({ public_token: publicToken }),
+    }),
+  sync: () => apiJson("/api/plaid/sync", { method: "POST" }),
+  removeItem: (itemId: string) =>
+    apiJson("/api/plaid/remove", {
+      method: "POST",
+      body: JSON.stringify({ itemId }),
+    }),
+  seedDemo: () => apiJson("/api/demo/seed", { method: "POST" }),
+  clearReal: () => apiJson("/api/demo/clear", { method: "POST" }),
+};
+
+/* ---------- Plaid Link script loader ---------- */
+declare global {
+  interface Window {
+    Plaid?: any;
+  }
+}
+
+let linkScriptPromise: Promise<void> | null = null;
+export function loadPlaidLink(): Promise<void> {
+  if (window.Plaid) return Promise.resolve();
+  if (!linkScriptPromise) {
+    linkScriptPromise = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.plaid.com/link/v2/stable/plaid-link-initialize.js";
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error("Failed to load Plaid Link"));
+      document.head.appendChild(s);
+    });
+  }
+  return linkScriptPromise;
+}

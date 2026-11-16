@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: card-tracker
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # These four are secrets — enter them in the Render dashboard
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: PLAID_CLIENT_ID
+        sync: false
+      - key: PLAID_SECRET
+        sync: false
+      # Optional app lock-screen PIN
+      - key: APP_PIN
+        sync: false
