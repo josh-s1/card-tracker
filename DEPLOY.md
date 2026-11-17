@@ -74,6 +74,12 @@ replace these deployment checks.
 
 ## Connecting and maintaining bank data
 
+Stored sample cards are hidden by default, without deleting their database rows.
+Use Connect → Show sample cards to display them for the current page session.
+Refresh or locking switches them off again. When any real bank is connected,
+samples remain hidden regardless of this setting, so payment/spending totals
+never mix sample and real data. No new environment variable is needed.
+
 Only after approval and the checks above, open the app, unlock it, and use
 Connect a bank. Enter bank credentials only in the bank/Plaid authentication
 flow, never in chat or an app configuration field.

@@ -84,6 +84,7 @@ export function catColor(c: string): string {
 /* ---------- App state helpers ---------- */
 
 export interface AppState {
+  sampleDataAvailable?: boolean;
   items: SafeItem[];
   accounts: Account[];
   transactions: Transaction[];

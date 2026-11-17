@@ -1,5 +1,12 @@
 # Security update checks
 
+## Sample visibility change
+- Baseline: user confirmed password gate, unlock, manual lock and Plaid opening on Render; existing stored samples are still visible without real banks.
+- Requested: Connect offers "Show sample cards", off by default; show/hide applies to Cards, card detail, Activity and Spending through the shared state response.
+- Visibility is session-only and resets after refresh or locking. No sample, bank, account or transaction rows are deleted by this setting.
+- When any real connection exists, samples remain hidden even if requested; sample totals never mix with real totals.
+- Validate: dummy-only state and mutation-response tests, client request preference/reset tests, TypeScript. Live browser verification requires user redeployment; do not claim it was performed.
+
 The first checklist records earlier manual flow checks, not verification of the
 current readiness branch. Re-run deployed/browser checks only after explicit
 deployment approval. Current automated checks use dummy data and mocked Plaid.

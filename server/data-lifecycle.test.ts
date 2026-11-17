@@ -7,7 +7,7 @@ import { items, accounts, transactions } from "../shared/schema";
 import { disconnectItem, DisconnectError } from "./data-lifecycle";
 import { seedDemoData, seedIfEmpty } from "./seed";
 import { registerRoutes, syncItem } from "./routes";
-import { api, apiJson, LockedError, setPin, getPin } from "../client/src/lib/api";
+import { api, apiJson, LockedError, setPin, getPin, getShowSamples, setShowSamples } from "../client/src/lib/api";
 import { encryptAccessToken, decryptAccessToken, validateProductionConfig } from "./token-vault";
 
 // Run only with an explicitly disposable local database, never hosted storage.
@@ -145,14 +145,14 @@ async function routes() {
     post: (path: string, handler: any) => handlers.set(`POST ${path}`, handler),
   } as any);
 }
-async function invoke(path: string, body?: unknown, method = "POST") {
+async function invoke(path: string, body?: unknown, method = "POST", headers: Record<string, string> = {}) {
   let status = 200;
   let payload: any;
   const response = {
     status(code: number) { status = code; return response; },
     json(value: unknown) { payload = value; return response; },
   };
-  await handlers.get(`${method} ${path}`)!({ body }, response);
+  await handlers.get(`${method} ${path}`)!({ body, get: (name: string) => headers[name.toLowerCase()] }, response);
   return { status, payload };
 }
 
@@ -570,4 +570,89 @@ test("revocation-marker write failure retains records but does not pretend outco
   // keeps records and requires owner-side reconciliation, as documented.
   await assert.rejects(disconnectItem(db, await bank(), async () => { throw new Error("dummy already absent"); }), DisconnectError);
   assert.deepEqual(await snapshot(), before);
+});
+
+test("stored production samples default hidden; repeated display toggles preserve every database row", async () => {
+  await fixture();
+  await db.delete(transactions);
+  await db.delete(accounts);
+  await db.delete(items);
+  await seedDemoData();
+  await routes();
+  const before = await snapshot();
+  for (const show of [false, true, false, true, false]) {
+    const headers = show ? { "x-show-samples": "true" } : {};
+    const { payload } = await invoke("/api/state", undefined, "GET", headers);
+    assert.equal(payload.sampleDataAvailable, true);
+    assert.equal(payload.items.length, show ? 1 : 0);
+    assert.equal(payload.accounts.length, show ? 3 : 0);
+    assert.equal(payload.transactions.length, show ? before.transactions.length : 0);
+    assert.deepEqual(await snapshot(), before);
+  }
+  for (const value of ["false", "1", "TRUE"]) {
+    const { payload } = await invoke("/api/state", undefined, "GET", { "x-show-samples": value });
+    assert.equal(payload.accounts.length, 0);
+  }
+});
+
+test("sample opt-in cannot mix demo accounts or transactions with real banks", async () => {
+  await fixture();
+  await seedDemoData();
+  await routes();
+  const before = await snapshot();
+  const { payload } = await invoke("/api/state", undefined, "GET", { "x-show-samples": "true" });
+  assert.equal(payload.sampleDataAvailable, true);
+  assert.equal(payload.items.length, 2);
+  assert.ok(payload.items.every((i: any) => !i.isDemo));
+  assert.ok(payload.accounts.every((a: any) => a.itemId !== "demo"));
+  assert.ok(payload.transactions.every((t: any) => t.itemId !== "demo"));
+  assert.deepEqual(await snapshot(), before);
+});
+
+test("sync and disconnect-all responses honor sample visibility without recreating or deleting samples", async () => {
+  await fixture();
+  await db.delete(transactions);
+  await db.delete(accounts);
+  await db.delete(items);
+  await seedDemoData();
+  await routes();
+  const before = await snapshot();
+  for (const [path, body] of [
+    ["/api/plaid/sync", undefined],
+    ["/api/demo/clear", { confirm: "disconnect-all" }],
+  ] as const) {
+    for (const show of [false, true]) {
+      const { payload, status } = await invoke(path, body, "POST", show ? { "x-show-samples": "true" } : {});
+      assert.equal(status, 200);
+      assert.equal(payload.accounts.length, show ? 3 : 0);
+      assert.deepEqual(await snapshot(), before);
+    }
+  }
+});
+
+test("sample visibility is sent explicitly and resets when locked or authentication is rejected", async () => {
+  const original = globalThis.fetch;
+  const flags: string[] = [];
+  let reject = false;
+  globalThis.fetch = async (_url, init) => {
+    flags.push((init?.headers as Record<string, string>)["x-show-samples"]);
+    return mockResponse(reject ? 401 : 200);
+  };
+  try {
+    assert.equal(getShowSamples(), false);
+    await api.state();
+    setShowSamples(true);
+    await api.state();
+    setPin("");
+    assert.equal(getShowSamples(), false);
+    await api.state();
+    setShowSamples(true);
+    reject = true;
+    await assert.rejects(api.state(), LockedError);
+    assert.equal(getShowSamples(), false);
+    assert.deepEqual(flags, ["false", "true", "false", "true"]);
+  } finally {
+    globalThis.fetch = original;
+    setPin("");
+  }
 });

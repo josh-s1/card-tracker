@@ -1,8 +1,13 @@
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
 let currentPin = "";
+// Display preference only. Never persisted; refresh/locking hides samples again.
+let showSamples = false;
+export function getShowSamples() { return showSamples; }
+export function setShowSamples(show: boolean) { showSamples = show; }
 export function setPin(pin: string) {
   currentPin = pin;
+  if (!pin) showSamples = false;
 }
 export function getPin() {
   return currentPin;
@@ -21,11 +26,12 @@ export async function apiJson<T = any>(path: string, init?: RequestInit): Promis
     headers: {
       "Content-Type": "application/json",
       "x-app-pin": currentPin,
+      "x-show-samples": String(showSamples),
       ...(init?.headers ?? {}),
     },
   });
   if (res.status === 401) {
-    currentPin = "";
+    setPin("");
     if (typeof window !== "undefined") window.dispatchEvent(new Event("card-tracker:locked"));
     throw new LockedError();
   }

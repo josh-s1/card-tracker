@@ -2,8 +2,9 @@ import { useContext, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { PinContext } from "@/App";
-import { api, loadPlaidLink } from "@/lib/api";
+import { api, loadPlaidLink, getShowSamples, setShowSamples } from "@/lib/api";
 import type { AppState } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
 import { Plug, RefreshCw, Trash2, Sparkles, ShieldCheck } from "lucide-react";
@@ -20,6 +21,7 @@ export default function ConnectPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [linkBusy, setLinkBusy] = useState(false);
+  const [samplesVisible, setSamplesVisible] = useState(getShowSamples);
 
   const config = useQuery<Config>({
     queryKey: ["config", pin],
@@ -261,6 +263,34 @@ export default function ConnectPage() {
 
       <div className="mb-2 mt-6 text-[15px] font-semibold">Sample data</div>
       <div className="space-y-2">
+        <div className="flex items-start justify-between gap-3 rounded-xl bg-white p-3.5">
+          <div className="min-w-0">
+            <label htmlFor="show-sample-cards" className="text-[15px] font-semibold">
+              Show sample cards
+            </label>
+            <p id="sample-visibility-description" className="mt-0.5 text-xs text-[#68757F]">
+              {realItems.length > 0
+                ? "Hidden while real banks are connected."
+                : !data.sampleDataAvailable
+                  ? "No sample cards are stored."
+                  : "Examples only. Off after refresh or locking. Nothing is deleted."}
+            </p>
+          </div>
+          <Switch
+            id="show-sample-cards"
+            aria-describedby="sample-visibility-description"
+            checked={samplesVisible && realItems.length === 0}
+            disabled={!data.sampleDataAvailable || realItems.length > 0}
+            onCheckedChange={(checked) => {
+              setShowSamples(checked);
+              setSamplesVisible(checked);
+              // Drop the old snapshot before refetching, so hidden sample totals
+              // cannot survive in another screen's shared query cache.
+              void queryClient.resetQueries({ queryKey: ["state"] });
+            }}
+            data-testid="switch-show-sample-cards"
+          />
+        </div>
         {hasDemo && (
           <div className="rounded-xl bg-white p-3.5 shadow-[0_1px_2px_rgba(20,33,43,0.04)]">
             <div className="text-[15px] font-semibold">Demo cards</div>

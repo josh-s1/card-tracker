@@ -155,14 +155,15 @@ export async function syncItem(itemId: string): Promise<void> {
   });
 }
 
-async function getState() {
+async function getState(showSamples = false) {
   const allItems = await db.select().from(items);
   const allAccounts = await db.select().from(accounts);
   const allTxns = await db.select().from(transactions);
   const hasReal = allItems.some(i => !i.isDemo);
-  const visibleItems = allItems.filter(i => !hasReal || !i.isDemo);
+  const visibleItems = allItems.filter(i => !i.isDemo || (showSamples && !hasReal));
   const visibleIds = new Set(visibleItems.map(i => i.id));
   return {
+    sampleDataAvailable: allItems.some(i => i.isDemo),
     items: visibleItems
       .map(({ accessToken, cursor, ...rest }) => ({ ...rest, disconnectPending: accessToken.startsWith("revoked:") })),
     accounts: allAccounts.filter(a => visibleIds.has(a.itemId)),
@@ -198,7 +199,7 @@ export async function registerRoutes(
       plaidEnv: plaidEnv(),
       pinRequired: Boolean(process.env.APP_PIN),
       demoEnabled: process.env.NODE_ENV !== "production",
-      securityRelease: "2026-11-17-data-lifecycle-1",
+      securityRelease: "2026-11-17-sample-visibility-2",
     });
   });
 
@@ -206,8 +207,8 @@ export async function registerRoutes(
     res.json({ ok: true });
   });
 
-  app.get("/api/state", wrap(async (_req, res) => {
-    res.json(await getState());
+  app.get("/api/state", wrap(async (req, res) => {
+    res.json(await getState(req.get("x-show-samples") === "true"));
   }));
 
   // --- Plaid ---
@@ -266,13 +267,13 @@ export async function registerRoutes(
       } catch {
         warnings.push("Bank connected, but the initial sync did not complete. Use Sync now to retry; payment data is not yet verified.");
       }
-      res.json({ ...(await getState()), warnings });
+      res.json({ ...(await getState(req.get("x-show-samples") === "true")), warnings });
     }),
   );
 
   app.post(
     "/api/plaid/sync",
-    wrap(async (_req, res) => {
+    wrap(async (req, res) => {
       const allItems = await db.select().from(items);
       const errors: string[] = [];
       for (const item of allItems) {
@@ -283,7 +284,7 @@ export async function registerRoutes(
           errors.push(`${item.institutionName}: sync did not complete. The last complete snapshot was kept. Review the bank connection if this persists.`);
         }
       }
-      res.json({ ...(await getState()), errors });
+      res.json({ ...(await getState(req.get("x-show-samples") === "true")), errors });
     }),
   );
 
@@ -297,19 +298,19 @@ export async function registerRoutes(
       const item = (await db.select().from(items).where(eq(items.id, itemId)))[0];
       if (!item) return res.status(404).json({ message: "Item not found" });
       await disconnectItem(db, item, removeItem);
-      res.json(await getState());
+      res.json(await getState(req.get("x-show-samples") === "true"));
     }),
   );
 
   // --- Demo data ---
   app.post(
     "/api/demo/seed",
-    wrap(async (_req, res) => {
+    wrap(async (req, res) => {
       if (process.env.NODE_ENV === "production") {
         return res.status(403).json({ message: "Sample mutations are disabled in production." });
       }
       await seedDemoData();
-      res.json(await getState());
+      res.json(await getState(req.get("x-show-samples") === "true"));
     }),
   );
 
@@ -335,7 +336,7 @@ export async function registerRoutes(
           message: "Some banks could not be disconnected. Their local records were kept; others may already be disconnected. Refresh and retry the remaining banks.",
         });
       }
-      res.json(await getState());
+      res.json(await getState(req.get("x-show-samples") === "true"));
     }),
   );
 
