@@ -180,7 +180,7 @@ export async function registerRoutes(
       plaidConfigured: plaidConfigured(),
       plaidEnv: plaidEnv(),
       pinRequired: Boolean(process.env.APP_PIN),
-      securityRelease: "2026-11-17-security-1",
+      securityRelease: "2026-11-17-plaid-loader-1",
     });
   });
 

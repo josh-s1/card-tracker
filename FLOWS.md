@@ -12,3 +12,5 @@
 - Production without APP_PIN refuses startup.
 - Desktop/mobile: no horizontal overflow; no new browser errors in ordinary flows.
 - Hosted check: public config includes security release marker after Render redeploys.
+- Plaid script: Connect a bank loads the official SDK directly from Plaid.
+- Plaid retry: failed SDK download clears the cached promise; next click retries without refresh.

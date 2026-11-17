@@ -68,9 +68,18 @@ export function loadPlaidLink(): Promise<void> {
   if (!linkScriptPromise) {
     linkScriptPromise = new Promise((resolve, reject) => {
       const s = document.createElement("script");
-      s.src = "https://cdn.plaid.com/link/v2/stable/plaid-link-initialize.js";
-      s.onload = () => resolve();
-      s.onerror = () => reject(new Error("Failed to load Plaid Link"));
+      s.src = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
+      s.async = true;
+      const failed = () => {
+        s.remove();
+        linkScriptPromise = null;
+        reject(new Error("Could not load Plaid's secure window. Check your connection and try again."));
+      };
+      s.onload = () => {
+        if (window.Plaid?.create) resolve();
+        else failed();
+      };
+      s.onerror = failed;
       document.head.appendChild(s);
     });
   }
