@@ -1,5 +1,9 @@
 import type { Account, Transaction, SafeItem } from "@shared/schema";
 
+export function cardName(account: Pick<Account, "name" | "nickname">): string {
+  return account.nickname || account.name;
+}
+
 /* ---------- Money & dates ---------- */
 
 export function money(cents: number, currency = "USD"): string {

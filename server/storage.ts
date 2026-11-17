@@ -64,6 +64,10 @@ const DDL = [
     category TEXT NOT NULL DEFAULT 'Other',
     pending INTEGER NOT NULL DEFAULT 0
   )`,
+  `CREATE TABLE IF NOT EXISTS account_preferences (
+    account_id TEXT PRIMARY KEY,
+    nickname TEXT NOT NULL
+  )`,
 ];
 
 export async function ensureSchema(): Promise<void> {

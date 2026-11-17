@@ -2,7 +2,7 @@ import type { Express, Request, Response } from "express";
 import type { Server } from "node:http";
 import { and, eq } from "drizzle-orm";
 import { db } from "./storage";
-import { items, accounts, transactions } from "@shared/schema";
+import { items, accounts, transactions, accountPreferences } from "@shared/schema";
 import { seedDemoData, seedIfEmpty } from "./seed";
 import { createPinGuard } from "./auth";
 import { disconnectItem, DisconnectError } from "./data-lifecycle";
@@ -159,6 +159,8 @@ async function getState(showSamples = false) {
   const allItems = await db.select().from(items);
   const allAccounts = await db.select().from(accounts);
   const allTxns = await db.select().from(transactions);
+  const preferences = await db.select().from(accountPreferences);
+  const nicknames = new Map(preferences.map(p => [p.accountId, p.nickname]));
   const hasReal = allItems.some(i => !i.isDemo);
   const visibleItems = allItems.filter(i => !i.isDemo || (showSamples && !hasReal));
   const visibleIds = new Set(visibleItems.map(i => i.id));
@@ -166,7 +168,8 @@ async function getState(showSamples = false) {
     sampleDataAvailable: allItems.some(i => i.isDemo),
     items: visibleItems
       .map(({ accessToken, cursor, ...rest }) => ({ ...rest, disconnectPending: accessToken.startsWith("revoked:") })),
-    accounts: allAccounts.filter(a => visibleIds.has(a.itemId)),
+    accounts: allAccounts.filter(a => visibleIds.has(a.itemId))
+      .map(a => ({ ...a, nickname: nicknames.get(a.id) ?? null })),
     transactions: allTxns.filter(t => visibleIds.has(t.itemId)),
   };
 }
@@ -199,7 +202,7 @@ export async function registerRoutes(
       plaidEnv: plaidEnv(),
       pinRequired: Boolean(process.env.APP_PIN),
       demoEnabled: process.env.NODE_ENV !== "production",
-      securityRelease: "2026-11-17-sample-visibility-2",
+      securityRelease: "2026-11-17-card-nicknames-3",
     });
   });
 
@@ -208,6 +211,29 @@ export async function registerRoutes(
   });
 
   app.get("/api/state", wrap(async (req, res) => {
+    res.json(await getState(req.get("x-show-samples") === "true"));
+  }));
+
+  app.post("/api/accounts/nickname", wrap(async (req, res) => {
+    const { accountId, nickname } = req.body ?? {};
+    if (typeof accountId !== "string" || !accountId.trim() || accountId.length > 512 ||
+        typeof nickname !== "string" || nickname.length > 80 ||
+        /[\u0000-\u001f\u007f]/.test(nickname)) {
+      return res.status(400).json({ message: "Provide an account ID and a nickname of up to 80 characters, without line breaks." });
+    }
+    const cleaned = nickname.trim();
+    const found = await db.transaction(async tx => {
+      const account = (await tx.select().from(accounts).where(eq(accounts.id, accountId)))[0];
+      if (!account || !(await tx.select().from(items).where(eq(items.id, account.itemId)))[0]) return false;
+      if (!cleaned) {
+        await tx.delete(accountPreferences).where(eq(accountPreferences.accountId, accountId));
+      } else {
+        await tx.insert(accountPreferences).values({ accountId, nickname: cleaned })
+          .onConflictDoUpdate({ target: accountPreferences.accountId, set: { nickname: cleaned } });
+      }
+      return true;
+    });
+    if (!found) return res.status(404).json({ message: "Card not found." });
     res.json(await getState(req.get("x-show-samples") === "true"));
   }));
 

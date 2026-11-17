@@ -58,6 +58,12 @@ export const transactions = sqliteTable("transactions", {
   pending: integer("pending", { mode: "boolean" }).notNull().default(false),
 });
 
+/** User-owned labels, separate from provider-owned account fields. */
+export const accountPreferences = sqliteTable("account_preferences", {
+  accountId: text("account_id").primaryKey(),
+  nickname: text("nickname").notNull(),
+});
+
 export const insertItemSchema = createInsertSchema(items);
 export const insertAccountSchema = createInsertSchema(accounts);
 export const insertTransactionSchema = createInsertSchema(transactions);
@@ -65,7 +71,7 @@ export const insertTransactionSchema = createInsertSchema(transactions);
 export type InsertItem = z.infer<typeof insertItemSchema>;
 export type Item = typeof items.$inferSelect;
 export type InsertAccount = z.infer<typeof insertAccountSchema>;
-export type Account = typeof accounts.$inferSelect;
+export type Account = typeof accounts.$inferSelect & { nickname?: string | null };
 export type InsertTransaction = z.infer<typeof insertTransactionSchema>;
 export type Transaction = typeof transactions.$inferSelect;
 

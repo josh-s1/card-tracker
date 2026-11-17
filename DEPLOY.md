@@ -74,6 +74,14 @@ replace these deployment checks.
 
 ## Connecting and maintaining bank data
 
+To give a card a personal label, open it from Cards and choose Rename card.
+Save a nickname of up to 80 characters, or leave it blank to restore the bank's
+current name. Nicknames are stored in Turso separately from provider-owned fields
+and survive refreshes and bank synchronization. Startup creates one additional
+account_preferences table if needed; existing tables/financial rows are unchanged.
+Removing a bank also removes its stored nicknames. No new environment variable
+or manual SQL is required.
+
 Stored sample cards are hidden by default, without deleting their database rows.
 Use Connect → Show sample cards to display them for the current page session.
 Refresh or locking switches them off again. When any real bank is connected,

@@ -10,6 +10,7 @@ import {
   dueText,
   fmtDate,
   creditCards,
+  cardName,
   type AppState,
 } from "@/lib/format";
 
@@ -54,7 +55,7 @@ export default function CardsPage() {
       {next && (
         <div className="mt-5 rounded-r-lg border-l-[3px] border-[#B26A00] bg-white p-3.5 text-sm shadow-[0_1px_2px_rgba(20,33,43,0.04)]">
           Next payment:{" "}
-          <span className="font-semibold">{next.name}</span>,{" "}
+          <span className="break-words font-semibold">{cardName(next)}</span>,{" "}
           {money(next.minDueCents ?? 0)} minimum by {fmtDate(next.dueDate!)} (
           {dueText(next.dueDate!)})
         </div>
@@ -73,9 +74,9 @@ export default function CardsPage() {
               className="block rounded-2xl p-4 text-white shadow-[0_6px_18px_rgba(20,33,43,0.16)] transition-transform active:scale-[0.985]"
               style={{ background: c.color }}
             >
-              <div className="flex items-baseline justify-between">
-                <span className="text-[15px] font-semibold">{c.name}</span>
-                <span className="text-xs opacity-75">
+              <div className="flex items-start justify-between gap-3">
+                <span className="min-w-0 flex-1 break-words text-[15px] font-semibold">{cardName(c)}</span>
+                <span className="shrink-0 text-xs opacity-75">
                   {c.network ? `${c.network} ` : ""}
                   {c.mask}
                 </span>

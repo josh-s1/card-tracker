@@ -3,12 +3,13 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { eq, sql } from "drizzle-orm";
 import { db, ensureSchema } from "./storage";
-import { items, accounts, transactions } from "../shared/schema";
+import { items, accounts, transactions, accountPreferences } from "../shared/schema";
 import { disconnectItem, DisconnectError } from "./data-lifecycle";
 import { seedDemoData, seedIfEmpty } from "./seed";
 import { registerRoutes, syncItem } from "./routes";
 import { api, apiJson, LockedError, setPin, getPin, getShowSamples, setShowSamples } from "../client/src/lib/api";
 import { encryptAccessToken, decryptAccessToken, validateProductionConfig } from "./token-vault";
+import { cardName } from "../client/src/lib/format";
 
 // Run only with an explicitly disposable local database, never hosted storage.
 assert.equal(process.env.TURSO_DATABASE_URL, "file:/scratch/dummy.db");
@@ -18,6 +19,7 @@ async function fixture() {
   process.env.NODE_ENV = "test";
   process.env.TOKEN_ENCRYPTION_KEY = "dummy-test-encryption-key-not-for-production";
   await ensureSchema();
+  await db.delete(accountPreferences);
   await db.delete(transactions);
   await db.delete(accounts);
   await db.delete(items);
@@ -654,5 +656,147 @@ test("sample visibility is sent explicitly and resets when locked or authenticat
   } finally {
     globalThis.fetch = original;
     setPin("");
+  }
+});
+
+test("nickname storage startup is additive and idempotent without changing financial rows", async () => {
+  await fixture();
+  const before = await snapshot();
+  await ensureSchema();
+  await ensureSchema();
+  assert.deepEqual(await snapshot(), before);
+  assert.deepEqual(await db.select().from(accountPreferences), []);
+});
+
+test("rename persists a trimmed nickname without modifying bank data or another card", async () => {
+  await fixture();
+  await routes();
+  const before = await snapshot();
+  const result = await invoke("/api/accounts/nickname", { accountId: "account-bank-a", nickname: "  My everyday card  " });
+  assert.equal(result.status, 200);
+  const renamed = result.payload.accounts.find((a: any) => a.id === "account-bank-a");
+  assert.equal(renamed.name, "bank-a");
+  assert.equal(renamed.nickname, "My everyday card");
+  assert.equal(cardName(renamed), "My everyday card");
+  assert.equal(result.payload.accounts.find((a: any) => a.id === "account-bank-b").nickname, null);
+  assert.deepEqual(await snapshot(), before);
+  await ensureSchema();
+  const refreshed = await invoke("/api/state", undefined, "GET");
+  assert.equal(refreshed.payload.accounts.find((a: any) => a.id === renamed.id).nickname, "My everyday card");
+  assert.ok(refreshed.payload.items.every((i: any) => !("accessToken" in i)));
+});
+
+test("replacing or clearing a nickname affects just that account and restores its bank name", async () => {
+  await fixture();
+  await routes();
+  await invoke("/api/accounts/nickname", { accountId: "account-bank-a", nickname: "First label" });
+  await invoke("/api/accounts/nickname", { accountId: "account-bank-b", nickname: "Keep this label" });
+  await invoke("/api/accounts/nickname", { accountId: "account-bank-a", nickname: "Updated label" });
+  assert.equal((await db.select().from(accountPreferences)).length, 2);
+  const cleared = await invoke("/api/accounts/nickname", { accountId: "account-bank-a", nickname: "   " });
+  assert.equal(cleared.status, 200);
+  const card = cleared.payload.accounts.find((a: any) => a.id === "account-bank-a");
+  assert.equal(card.nickname, null);
+  assert.equal(cardName(card), "bank-a");
+  assert.equal((await db.select().from(accountPreferences))[0].nickname, "Keep this label");
+});
+
+test("invalid nickname requests and unknown cards cannot mutate stored labels", async () => {
+  await fixture();
+  await routes();
+  await invoke("/api/accounts/nickname", { accountId: "account-bank-a", nickname: "Keep" });
+  const before = await snapshot();
+  const preferences = await db.select().from(accountPreferences);
+  for (const body of [
+    {}, { accountId: [], nickname: "Label" }, { accountId: "", nickname: "Label" },
+    { accountId: "account-bank-a", nickname: null },
+    { accountId: "account-bank-a", nickname: "x".repeat(81) },
+    { accountId: "account-bank-a", nickname: "line\nbreak" },
+    { accountId: "account-bank-a", nickname: "bad\u0000label" },
+  ]) {
+    assert.equal((await invoke("/api/accounts/nickname", body)).status, 400);
+  }
+  assert.equal((await invoke("/api/accounts/nickname", { accountId: "not-a-card", nickname: "No" })).status, 404);
+  assert.deepEqual(await snapshot(), before);
+  assert.deepEqual(await db.select().from(accountPreferences), preferences);
+});
+
+test("bank synchronization updates the provider name without overwriting the personal nickname", async () => {
+  await fixture();
+  await routes();
+  await invoke("/api/accounts/nickname", { accountId: "account-bank-a", nickname: "My renamed card" });
+  await providerCheck(async () => {
+    await syncItem("bank-a");
+    const { payload } = await invoke("/api/state", undefined, "GET");
+    const card = payload.accounts.find((a: any) => a.id === "account-bank-a");
+    assert.equal(card.name, "Dummy card");
+    assert.equal(card.nickname, "My renamed card");
+    assert.equal(cardName(card), "My renamed card");
+    assert.equal(cardName({ name: "Bank name" }), "Bank name");
+  }, path => path === "/transactions/sync"
+    ? mockResponse(200, JSON.stringify(delta()))
+    : standardProvider(path));
+});
+
+test("disconnect preserves nicknames on failure and cleans only the selected bank on successful retry", async () => {
+  await fixture();
+  await db.insert(accountPreferences).values([
+    { accountId: "account-bank-a", nickname: "First" },
+    { accountId: "account-bank-b", nickname: "Second" },
+  ]);
+  await assert.rejects(disconnectItem(db, await bank(), async () => { throw new Error("dummy revoke failure"); }));
+  assert.equal((await db.select().from(accountPreferences)).length, 2);
+  await db.run(sql`CREATE TRIGGER fail_dummy_nickname_cleanup BEFORE DELETE ON accounts
+    BEGIN SELECT RAISE(ABORT, 'dummy cleanup failure'); END`);
+  try {
+    await assert.rejects(disconnectItem(db, await bank(), async () => ({})));
+    assert.equal((await db.select().from(accountPreferences)).length, 2);
+  } finally {
+    await db.run(sql`DROP TRIGGER fail_dummy_nickname_cleanup`);
+  }
+  await disconnectItem(db, await bank(), async () => assert.fail("already revoked"));
+  assert.deepEqual(await db.select().from(accountPreferences), [
+    { accountId: "account-bank-b", nickname: "Second" },
+  ]);
+});
+
+test("nickname client uses the protected API and preserves literal names in JSON", async () => {
+  const original = globalThis.fetch;
+  let observedPath = "";
+  let observedBody = "";
+  globalThis.fetch = async (url, init) => {
+    observedPath = String(url);
+    observedBody = String(init?.body);
+    assert.equal(init?.method, "POST");
+    assert.equal((init?.headers as Record<string, string>)["x-app-pin"], "dummy-nickname-password");
+    return mockResponse();
+  };
+  try {
+    setPin("dummy-nickname-password");
+    await api.renameCard("account-bank-a", 'Travel & "rewards"');
+    assert.equal(observedPath, "/api/accounts/nickname");
+    assert.deepEqual(JSON.parse(observedBody), { accountId: "account-bank-a", nickname: 'Travel & "rewards"' });
+  } finally {
+    globalThis.fetch = original;
+    setPin("");
+  }
+});
+
+test("failed nickname persistence keeps the old nickname and every financial record", async () => {
+  await fixture();
+  await routes();
+  await invoke("/api/accounts/nickname", { accountId: "account-bank-a", nickname: "Original nickname" });
+  const before = await snapshot();
+  const preferences = await db.select().from(accountPreferences);
+  await db.run(sql`CREATE TRIGGER fail_dummy_nickname_save BEFORE UPDATE ON account_preferences
+    BEGIN SELECT RAISE(ABORT, 'dummy save failure'); END`);
+  try {
+    const result = await invoke("/api/accounts/nickname", { accountId: "account-bank-a", nickname: "Must not save" });
+    assert.equal(result.status, 500);
+    assert.equal(result.payload.message, "Server error");
+    assert.deepEqual(await snapshot(), before);
+    assert.deepEqual(await db.select().from(accountPreferences), preferences);
+  } finally {
+    await db.run(sql`DROP TRIGGER fail_dummy_nickname_save`);
   }
 });

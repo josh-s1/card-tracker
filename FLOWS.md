@@ -1,5 +1,13 @@
 # Security update checks
 
+## Card nicknames
+- User reports the deployed sample switch and one real bank connection/manual sync work. Do not access or modify the live database during development.
+- Open a card → Rename card → enter a nickname → Save; use the nickname in Cards, next-payment text, detail, Activity/Spending filters and transaction card labels.
+- Preserve bank name, account ID, balance, transactions and token. A later bank sync must not overwrite the nickname.
+- Clearing the nickname restores the current bank-provided name. Cancel and rejected saves must not change the stored name.
+- Add only the independent account_preferences table on startup; no alteration, deletion or migration of existing financial rows.
+- Validate with isolated dummy-data tests and TypeScript. Live mobile/browser checks remain pending manual deployment.
+
 ## Sample visibility change
 - Baseline: user confirmed password gate, unlock, manual lock and Plaid opening on Render; existing stored samples are still visible without real banks.
 - Requested: Connect offers "Show sample cards", off by default; show/hide applies to Cards, card detail, Activity and Spending through the shared state response.

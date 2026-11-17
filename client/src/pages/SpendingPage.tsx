@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PinContext } from "@/App";
 import { api } from "@/lib/api";
-import type { AppState } from "@/lib/format";
+import { cardName, type AppState } from "@/lib/format";
 import { SpendingPanel } from "./SpendingPanel";
 
 export default function SpendingPage() {
@@ -43,7 +43,7 @@ export default function SpendingPage() {
             onClick={() => setCard(c.id)}
             className="mr-2 flex-none rounded-full border border-[#D9DEE2] bg-white px-3 py-1.5 text-[13px] font-medium text-[#68757F] aria-pressed:border-[#14212B] aria-pressed:bg-[#14212B] aria-pressed:text-white"
           >
-            {c.name}
+            {cardName(c)}
           </button>
         ))}
       </div>

@@ -1,14 +1,17 @@
 import { useContext, useState } from "react";
 import { Link, useParams } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { PinContext } from "@/App";
-import { api } from "@/lib/api";
+import { api, getPin } from "@/lib/api";
 import {
   money,
   money0,
   fmtDate,
   dueText,
+  cardName,
   type AppState,
 } from "@/lib/format";
 import { SpendingPanel } from "./SpendingPanel";
@@ -18,6 +21,20 @@ export default function CardDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { pin } = useContext(PinContext);
   const [tab, setTab] = useState<"txns" | "spend">("txns");
+  const [renaming, setRenaming] = useState(false);
+  const [nickname, setNickname] = useState("");
+  const queryClient = useQueryClient();
+  const rename = useMutation({
+    mutationFn: ({ accountId, nickname }: { accountId: string; nickname: string }) =>
+      api.renameCard(accountId, nickname),
+    onSuccess: (state: AppState) => {
+      // A response arriving after Lock must not refill the cleared data cache.
+      if (getPin() !== pin) return;
+      queryClient.setQueryData(["state", pin], state);
+      void queryClient.invalidateQueries({ queryKey: ["state"] });
+      setRenaming(false);
+    },
+  });
   const { data, isLoading, error } = useQuery<AppState>({
     queryKey: ["state", pin],
     queryFn: api.state,
@@ -57,9 +74,9 @@ export default function CardDetailPage() {
         className="rounded-[18px] p-5 text-white shadow-[0_8px_24px_rgba(20,33,43,0.2)]"
         style={{ background: card.color }}
       >
-        <div className="flex items-baseline justify-between">
-          <span className="font-semibold">{card.name}</span>
-          <span className="text-[12.5px] opacity-80">
+        <div className="flex items-start justify-between gap-3">
+          <span className="min-w-0 flex-1 break-words font-semibold">{cardName(card)}</span>
+          <span className="shrink-0 text-[12.5px] opacity-80">
             {card.network ? `${card.network} ` : ""}
             {card.mask}
           </span>
@@ -81,6 +98,48 @@ export default function CardDetailPage() {
             {util}% of {money0(card.limitCents ?? 0, card.currency)}
           </span>
         </div>
+      </div>
+
+      <div className="mt-3 rounded-xl bg-white p-3.5">
+        <p className="break-words text-xs text-[#68757F]">Bank name: {card.name}</p>
+        {renaming ? (
+          <form className="mt-3 space-y-3" onSubmit={event => {
+            event.preventDefault();
+            if (!rename.isPending) rename.mutate({ accountId: card.id, nickname });
+          }}>
+            <label htmlFor="card-nickname" className="block text-sm font-semibold">Card nickname</label>
+            <Input
+              id="card-nickname"
+              value={nickname}
+              maxLength={80}
+              disabled={rename.isPending}
+              onChange={event => setNickname(event.target.value)}
+              placeholder={card.name}
+              aria-describedby="nickname-help"
+              autoFocus
+              data-testid="input-card-nickname"
+            />
+            <p id="nickname-help" className="text-xs text-[#68757F]">
+              Leave blank to use the bank name. Syncing will not overwrite your nickname.
+            </p>
+            {rename.error && <p role="alert" className="text-sm text-[#8A3B3B]">{rename.error.message}</p>}
+            <div className="flex gap-2">
+              <Button type="submit" disabled={rename.isPending} data-testid="button-save-nickname">
+                {rename.isPending ? "Saving…" : "Save"}
+              </Button>
+              <Button type="button" variant="outline" disabled={rename.isPending}
+                onClick={() => setRenaming(false)} data-testid="button-cancel-nickname">
+                Cancel
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <Button type="button" variant="outline" className="mt-2"
+            onClick={() => { setNickname(card.nickname ?? ""); rename.reset(); setRenaming(true); }}
+            data-testid="button-rename-card">
+            Rename card
+          </Button>
+        )}
       </div>
 
       <SectionTitle>Payment</SectionTitle>

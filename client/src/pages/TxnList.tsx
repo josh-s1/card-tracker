@@ -1,5 +1,5 @@
 import type { Transaction, Account } from "@shared/schema";
-import { money, catColor, displayMerchant, dayLabel } from "@/lib/format";
+import { money, catColor, displayMerchant, dayLabel, cardName } from "@/lib/format";
 
 export function TxnList({
   txns,
@@ -48,9 +48,9 @@ export function TxnList({
                     <div className="truncate text-[15px] font-medium">
                       {displayMerchant(t)}
                     </div>
-                    <div className="mt-0.5 text-xs text-[#68757F]">
+                    <div className="mt-0.5 break-words text-xs text-[#68757F]">
                       {t.category}
-                      {showCard && acct ? `, ${acct.name} ${acct.mask}` : ""}
+                      {showCard && acct ? `, ${cardName(acct)} ${acct.mask}` : ""}
                       {t.pending ? ", pending" : ""}
                     </div>
                   </div>

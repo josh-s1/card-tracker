@@ -31,7 +31,7 @@ test("PIN protection, public config, throttling, expiry and cache policy", () =>
   assert.equal(request("/config").status, 200);
   time += 1001;
   assert.equal(request("/state", "local-test-password").status, 200);
-  for (const path of ["/config/", "/Config", "/config/extra", "/unlock", "/plaid/remove"]) {
+  for (const path of ["/config/", "/Config", "/config/extra", "/unlock", "/plaid/remove", "/accounts/nickname"]) {
     // Only the exact public config path is exempt.
     assert.notEqual(request(path).status, 200);
   }

@@ -54,6 +54,11 @@ export async function apiJson<T = any>(path: string, init?: RequestInit): Promis
 export const api = {
   config: () => apiJson("/api/config"),
   state: () => apiJson("/api/state"),
+  renameCard: (accountId: string, nickname: string) =>
+    apiJson("/api/accounts/nickname", {
+      method: "POST",
+      body: JSON.stringify({ accountId, nickname }),
+    }),
   linkToken: () => apiJson("/api/plaid/link-token", { method: "POST" }),
   exchange: (publicToken: string) =>
     apiJson("/api/plaid/exchange", {
