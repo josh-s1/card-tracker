@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "./storage";
 import { items, accounts, transactions } from "@shared/schema";
 import { seedDemoData, seedIfEmpty } from "./seed";
+import { createPinGuard } from "./auth";
 import {
   plaidConfigured,
   plaidEnv,
@@ -105,7 +106,7 @@ async function syncItem(itemId: string): Promise<void> {
       }
     }
   } catch (err) {
-    console.error("Liabilities fetch failed:", err);
+    console.error("Liabilities fetch failed", { code: err instanceof PlaidError ? err.plaidCode : "INTERNAL_ERROR" });
   }
 
   // 3) Transactions (sync with cursor)
@@ -161,14 +162,7 @@ export async function registerRoutes(
 ): Promise<Server> {
   await seedIfEmpty();
 
-  // --- PIN lock (only when APP_PIN is set on the server) ---
-  app.use("/api", (req: any, res: any, next: any) => {
-    const pin = process.env.APP_PIN;
-    if (!pin) return next();
-    if (req.path === "/config") return next();
-    if (req.get("x-app-pin") === pin) return next();
-    return res.status(401).json({ message: "locked" });
-  });
+  app.use("/api", createPinGuard(process.env.APP_PIN));
 
   const wrap =
     (fn: (req: Request, res: Response) => unknown) =>
@@ -177,8 +171,8 @@ export async function registerRoutes(
         if (err instanceof PlaidError) {
           return res.status(err.status).json({ message: err.message, code: err.plaidCode });
         }
-        console.error(err);
-        res.status(500).json({ message: err.message || "Server error" });
+        console.error("API request failed");
+        res.status(500).json({ message: "Server error" });
       });
 
   app.get("/api/config", (_req, res) => {
@@ -186,12 +180,17 @@ export async function registerRoutes(
       plaidConfigured: plaidConfigured(),
       plaidEnv: plaidEnv(),
       pinRequired: Boolean(process.env.APP_PIN),
+      securityRelease: "2026-11-17-security-1",
     });
   });
 
-  app.get("/api/state", async (_req, res) => {
-    res.json(await getState());
+  app.post("/api/unlock", (_req, res) => {
+    res.json({ ok: true });
   });
+
+  app.get("/api/state", wrap(async (_req, res) => {
+    res.json(await getState());
+  }));
 
   // --- Plaid ---
   app.post(

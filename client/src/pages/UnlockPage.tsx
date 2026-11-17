@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Lock } from "lucide-react";
+import { apiJson, setPin, LockedError } from "@/lib/api";
 
 export default function UnlockPage({ onUnlocked }: { onUnlocked: (p: string) => void }) {
   const [pin, setLocal] = useState("");
@@ -13,18 +14,16 @@ export default function UnlockPage({ onUnlocked }: { onUnlocked: (p: string) => 
     setError("");
     try {
       // A real API call with the PIN; success means the pin is right.
-      const res = await fetch("__PORT_5000__/api/config", {
-        headers: { "x-app-pin": pin },
-      });
-      if (res.ok) {
-        onUnlocked(pin);
-      } else if (res.status === 401) {
+      setPin(pin);
+      await apiJson("/api/unlock", { method: "POST" });
+      onUnlocked(pin);
+    } catch (err) {
+      setPin("");
+      if (err instanceof LockedError) {
         setError("Incorrect access code. Try again.");
       } else {
-        setError("Something went wrong. Try again.");
+        setError(err instanceof Error ? err.message : "Unable to unlock. Try again.");
       }
-    } catch {
-      setError("Network error. Try again.");
     } finally {
       setBusy(false);
     }
@@ -51,7 +50,7 @@ export default function UnlockPage({ onUnlocked }: { onUnlocked: (p: string) => 
         >
           <Input
             type="password"
-            inputMode="numeric"
+            autoComplete="current-password"
             placeholder="Access code"
             value={pin}
             onChange={(e) => setLocal(e.target.value)}

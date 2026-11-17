@@ -3,7 +3,7 @@ services:
     name: card-tracker
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
     envVars:
       - key: NODE_ENV
@@ -17,6 +17,6 @@ services:
         sync: false
       - key: PLAID_SECRET
         sync: false
-      # Optional app lock-screen PIN
+      # Required app lock-screen password
       - key: APP_PIN
         sync: false

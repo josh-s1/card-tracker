@@ -25,6 +25,10 @@ export async function apiJson<T = any>(path: string, init?: RequestInit): Promis
     },
   });
   if (res.status === 401) throw new LockedError();
+  if (res.status === 429) {
+    const seconds = Number(res.headers.get("Retry-After") ?? 900);
+    throw new Error(`Too many attempts. Try again in ${Math.max(1, Math.ceil(seconds / 60))} minutes.`);
+  }
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
     throw new Error(text);
