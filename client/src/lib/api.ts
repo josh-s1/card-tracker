@@ -24,14 +24,23 @@ export async function apiJson<T = any>(path: string, init?: RequestInit): Promis
       ...(init?.headers ?? {}),
     },
   });
-  if (res.status === 401) throw new LockedError();
+  if (res.status === 401) {
+    currentPin = "";
+    if (typeof window !== "undefined") window.dispatchEvent(new Event("card-tracker:locked"));
+    throw new LockedError();
+  }
   if (res.status === 429) {
     const seconds = Number(res.headers.get("Retry-After") ?? 900);
     throw new Error(`Too many attempts. Try again in ${Math.max(1, Math.ceil(seconds / 60))} minutes.`);
   }
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
-    throw new Error(text);
+    let message = text;
+    try {
+      const body = JSON.parse(text);
+      if (typeof body.message === "string") message = body.message;
+    } catch { /* Plain text errors are also supported. */ }
+    throw new Error(message);
   }
   return res.json();
 }
@@ -52,7 +61,10 @@ export const api = {
       body: JSON.stringify({ itemId }),
     }),
   seedDemo: () => apiJson("/api/demo/seed", { method: "POST" }),
-  clearReal: () => apiJson("/api/demo/clear", { method: "POST" }),
+  clearReal: () => apiJson("/api/demo/clear", {
+    method: "POST",
+    body: JSON.stringify({ confirm: "disconnect-all" }),
+  }),
 };
 
 /* ---------- Plaid Link script loader ---------- */

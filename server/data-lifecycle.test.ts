@@ -1,0 +1,573 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import { eq, sql } from "drizzle-orm";
+import { db, ensureSchema } from "./storage";
+import { items, accounts, transactions } from "../shared/schema";
+import { disconnectItem, DisconnectError } from "./data-lifecycle";
+import { seedDemoData, seedIfEmpty } from "./seed";
+import { registerRoutes, syncItem } from "./routes";
+import { api, apiJson, LockedError, setPin, getPin } from "../client/src/lib/api";
+import { encryptAccessToken, decryptAccessToken, validateProductionConfig } from "./token-vault";
+
+// Run only with an explicitly disposable local database, never hosted storage.
+assert.equal(process.env.TURSO_DATABASE_URL, "file:/scratch/dummy.db");
+assert.equal(process.env.TURSO_AUTH_TOKEN, undefined);
+
+async function fixture() {
+  process.env.NODE_ENV = "test";
+  process.env.TOKEN_ENCRYPTION_KEY = "dummy-test-encryption-key-not-for-production";
+  await ensureSchema();
+  await db.delete(transactions);
+  await db.delete(accounts);
+  await db.delete(items);
+  for (const id of ["bank-a", "bank-b"]) {
+    await db.insert(items).values({
+      id, institutionName: id, accessToken: encryptAccessToken(`dummy-${id}`),
+      isDemo: false, createdAt: "2026-01-01",
+    });
+    await db.insert(accounts).values({ id: `account-${id}`, itemId: id, name: id });
+    await db.insert(transactions).values({
+      id: `txn-${id}`, accountId: `account-${id}`, itemId: id,
+      date: "2026-01-01", name: "Dummy purchase", amountCents: 123,
+    });
+  }
+}
+
+async function snapshot() {
+  return {
+    items: await db.select().from(items).orderBy(items.id),
+    accounts: await db.select().from(accounts).orderBy(accounts.id),
+    transactions: await db.select().from(transactions).orderBy(transactions.id),
+  };
+}
+
+async function bank(id = "bank-a") {
+  return (await db.select().from(items).where(eq(items.id, id)))[0];
+}
+
+function mockResponse(status = 200, body = "{}") {
+  return {
+    status, ok: status >= 200 && status < 300, statusText: String(status),
+    headers: { get: () => null },
+    json: async () => JSON.parse(body), text: async () => body,
+  } as unknown as Response;
+}
+
+test("production startup never creates samples; sample reset rejects without changes", async () => {
+  await fixture();
+  const before = await snapshot();
+  process.env.NODE_ENV = "production";
+  await seedIfEmpty();
+  await assert.rejects(seedDemoData(), /disabled in production/);
+  assert.deepEqual(await snapshot(), before);
+  await db.delete(transactions);
+  await db.delete(accounts);
+  await db.delete(items);
+  await seedIfEmpty();
+  assert.equal((await snapshot()).items.length, 0);
+});
+
+test("repeated development sample reload preserves every real row and token", async () => {
+  await fixture();
+  process.env.NODE_ENV = "test";
+  const before = await snapshot();
+  await seedDemoData();
+  await seedDemoData();
+  const after = await snapshot();
+  assert.deepEqual(after.items.filter(i => !i.isDemo), before.items);
+  assert.deepEqual(after.accounts.filter(a => a.itemId !== "demo"), before.accounts);
+  assert.deepEqual(after.transactions.filter(t => t.itemId !== "demo"), before.transactions);
+  assert.equal(after.items.filter(i => i.isDemo).length, 1);
+  assert.equal(after.accounts.filter(a => a.itemId === "demo").length, 3);
+});
+
+test("failed revocation preserves all records and hides upstream error details", async () => {
+  await fixture();
+  const before = await snapshot();
+  await assert.rejects(
+    disconnectItem(db, await bank(), async () => { throw new Error("dummy-private-upstream-detail"); }),
+    (error: unknown) => error instanceof DisconnectError && !error.message.includes("private"),
+  );
+  assert.deepEqual(await snapshot(), before);
+});
+
+test("missing real-bank token fails closed without deleting", async () => {
+  await fixture();
+  const before = await snapshot();
+  await assert.rejects(
+    disconnectItem(db, { ...(await bank()), accessToken: "" }, async () => assert.fail("must not call provider")),
+    DisconnectError,
+  );
+  assert.deepEqual(await snapshot(), before);
+});
+
+test("successful disconnect revokes first, deletes only selected bank including accounts", async () => {
+  await fixture();
+  const selected = await bank();
+  let calls = 0;
+  await disconnectItem(db, selected, async token => {
+    calls++;
+    assert.equal(token, "dummy-bank-a");
+    assert.equal((await snapshot()).transactions.length, 2);
+  });
+  assert.equal(calls, 1);
+  const after = await snapshot();
+  assert.deepEqual(after.items.map(i => i.id), ["bank-b"]);
+  assert.deepEqual(after.accounts.map(a => a.itemId), ["bank-b"]);
+  assert.deepEqual(after.transactions.map(t => t.itemId), ["bank-b"]);
+});
+
+test("local deletion failure rolls back all three tables", async () => {
+  await fixture();
+  const before = await snapshot();
+  await db.run(sql`CREATE TRIGGER fail_dummy_delete BEFORE DELETE ON items
+    WHEN OLD.id = 'bank-a' BEGIN SELECT RAISE(ABORT, 'dummy failure'); END`);
+  try {
+    await assert.rejects(disconnectItem(db, await bank(), async () => ({})));
+    const after = await snapshot();
+    assert.deepEqual(after.accounts, before.accounts);
+    assert.deepEqual(after.transactions, before.transactions);
+    assert.equal(after.items[0].accessToken, `revoked:${before.items[0].accessToken}`);
+  } finally {
+    await db.run(sql`DROP TRIGGER fail_dummy_delete`);
+  }
+  await disconnectItem(db, await bank(), async () => assert.fail("revocation must not be repeated"));
+  assert.equal(await bank(), undefined);
+});
+
+const handlers = new Map<string, (...args: any[]) => any>();
+async function routes() {
+  process.env.NODE_ENV = "production";
+  await registerRoutes({} as any, {
+    use: () => {},
+    get: (path: string, handler: any) => handlers.set(`GET ${path}`, handler),
+    post: (path: string, handler: any) => handlers.set(`POST ${path}`, handler),
+  } as any);
+}
+async function invoke(path: string, body?: unknown, method = "POST") {
+  let status = 200;
+  let payload: any;
+  const response = {
+    status(code: number) { status = code; return response; },
+    json(value: unknown) { payload = value; return response; },
+  };
+  await handlers.get(`${method} ${path}`)!({ body }, response);
+  return { status, payload };
+}
+
+test("production sample route rejects and config hides its control", async () => {
+  await fixture();
+  await routes();
+  const before = await snapshot();
+  assert.equal((await invoke("/api/demo/seed")).status, 403);
+  assert.equal((await invoke("/api/config", undefined, "GET")).payload.demoEnabled, false);
+  assert.deepEqual(await snapshot(), before);
+});
+
+test("disconnect-all without explicit confirmation does not mutate", async () => {
+  await fixture();
+  await routes();
+  const before = await snapshot();
+  assert.equal((await invoke("/api/demo/clear")).status, 400);
+  assert.deepEqual(await snapshot(), before);
+});
+
+test("disconnect route rejects invalid item selectors", async () => {
+  await fixture();
+  await routes();
+  for (const itemId of [undefined, "", [], 1]) {
+    assert.equal((await invoke("/api/plaid/remove", { itemId })).status, 400);
+  }
+});
+
+test("disconnect failure returns error; retry succeeds and removes accounts correctly", async () => {
+  await fixture();
+  await routes();
+  const before = await snapshot();
+  const original = globalThis.fetch;
+  process.env.PLAID_CLIENT_ID = "dummy-client";
+  process.env.PLAID_SECRET = "dummy-secret";
+  try {
+    globalThis.fetch = async () => { throw new Error("dummy revocation failure"); };
+    assert.equal((await invoke("/api/plaid/remove", { itemId: "bank-a" })).status, 502);
+    assert.deepEqual(await snapshot(), before);
+    globalThis.fetch = async () => mockResponse();
+    const result = await invoke("/api/plaid/remove", { itemId: "bank-a" });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.payload.accounts.map((a: any) => a.itemId), ["bank-b"]);
+    assert.ok(result.payload.items.every((i: any) => !("accessToken" in i)));
+  } finally {
+    globalThis.fetch = original;
+    delete process.env.PLAID_CLIENT_ID;
+    delete process.env.PLAID_SECRET;
+  }
+});
+
+test("disconnect-all reports partial failure and retains failed bank plus demo records", async () => {
+  await fixture();
+  process.env.NODE_ENV = "test";
+  await seedDemoData();
+  await routes();
+  const original = globalThis.fetch;
+  process.env.PLAID_CLIENT_ID = "dummy-client";
+  process.env.PLAID_SECRET = "dummy-secret";
+  const tokens: string[] = [];
+  try {
+    globalThis.fetch = async (_url, init) => {
+      const token = JSON.parse(String(init?.body)).access_token;
+      tokens.push(token);
+      if (token === "dummy-bank-b") throw new Error("dummy outage");
+      return mockResponse();
+    };
+    const first = await invoke("/api/demo/clear", { confirm: "disconnect-all" });
+    assert.equal(first.status, 502);
+    assert.match(first.payload.message, /others may already be disconnected/);
+    const after = await snapshot();
+    assert.deepEqual(after.items.map(i => i.id), ["bank-b", "demo"]);
+    assert.ok(after.accounts.some(a => a.itemId === "bank-b"));
+    assert.ok(after.transactions.some(t => t.itemId === "bank-b"));
+    assert.equal(after.accounts.filter(a => a.itemId === "demo").length, 3);
+    assert.deepEqual(tokens, ["dummy-bank-a", "dummy-bank-b"]);
+    globalThis.fetch = async () => mockResponse();
+    assert.equal((await invoke("/api/demo/clear", { confirm: "disconnect-all" })).status, 200);
+    assert.deepEqual((await snapshot()).items.map(i => i.id), ["demo"]);
+  } finally {
+    globalThis.fetch = original;
+    delete process.env.PLAID_CLIENT_ID;
+    delete process.env.PLAID_SECRET;
+  }
+});
+
+test("API network failures never become sample data or fake mutation success", async () => {
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => { throw new Error("dummy offline"); };
+    for (const action of [api.config, api.state, api.seedDemo, api.clearReal, () => api.removeItem("bank-a")]) {
+      await assert.rejects(action(), /dummy offline/);
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("API 404/405 remain errors; authentication errors are preserved", async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const status of [404, 405]) {
+      globalThis.fetch = async () => mockResponse(status, "dummy unavailable");
+      await assert.rejects(api.state(), /dummy unavailable/);
+      await assert.rejects(api.clearReal(), /dummy unavailable/);
+    }
+    globalThis.fetch = async () => mockResponse(401, "locked");
+    await assert.rejects(apiJson("/api/state"), LockedError);
+    globalThis.fetch = async () => mockResponse(429, "limited");
+    await assert.rejects(api.state(), /Too many attempts/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("client no longer overrides fetch and blocks shell on config failure", () => {
+  const source = readFileSync("client/src/App.tsx", "utf8");
+  assert.doesNotMatch(source, /window\.fetch\s*=|previewResponseFor|PREVIEW_STATE/);
+  assert.match(source, /if \(config\.isError \|\| !config\.data\)/);
+  assert.match(source, /Could not reach Card Tracker/);
+  const connect = readFileSync("client/src/pages/ConnectPage.tsx", "utf8");
+  assert.match(connect, /config\.data\?\.demoEnabled/);
+  assert.match(connect, /window\.confirm\(`Disconnect/);
+  assert.match(connect, /window\.confirm\("Disconnect all banks/);
+});
+
+async function providerCheck(run: () => Promise<void>, handler: (path: string, body: any) => any) {
+  const original = globalThis.fetch;
+  process.env.PLAID_CLIENT_ID = "dummy-client";
+  process.env.PLAID_SECRET = "dummy-secret";
+  globalThis.fetch = async (url, init) => {
+    assert.ok(init?.signal, "provider requests must have a timeout");
+    return handler(new URL(String(url)).pathname, JSON.parse(String(init?.body)));
+  };
+  try { await run(); } finally {
+    globalThis.fetch = original;
+    delete process.env.PLAID_CLIENT_ID;
+    delete process.env.PLAID_SECRET;
+  }
+}
+const balances = () => ({
+  accounts: [{ account_id: "account-bank-a", name: "Dummy card", type: "credit",
+    balances: { current: 45.67, limit: 1000, iso_currency_code: "USD" } }],
+});
+const liabilities = () => ({ liabilities: { credit: [{
+  account_id: "account-bank-a", minimum_payment_amount: 12.34,
+  next_payment_due_date: "2026-12-01", last_statement_balance: 40,
+}] } });
+const delta = (patch: Record<string, unknown> = {}) => ({
+  added: [], modified: [], removed: [], next_cursor: "complete-cursor", has_more: false, ...patch,
+});
+const transaction = (id: string, amount: number, patch: Record<string, unknown> = {}) => ({
+  transaction_id: id, account_id: "account-bank-a", amount,
+  date: "2026-11-01", name: "Updated dummy merchant", pending: false, ...patch,
+});
+function standardProvider(path: string) {
+  if (path === "/accounts/balance/get") return mockResponse(200, JSON.stringify(balances()));
+  if (path === "/liabilities/get") return mockResponse(200, JSON.stringify(liabilities()));
+  throw new Error(`Unexpected mocked path ${path}`);
+}
+
+test("sync applies modified/removal objects and reconciles pending transactions without crossing banks", async () => {
+  await fixture();
+  await providerCheck(async () => {
+    await syncItem("bank-a");
+    const after = await snapshot();
+    assert.equal(after.transactions.find(t => t.id === "txn-bank-a")?.amountCents, 987);
+    assert.ok(after.transactions.some(t => t.id === "txn-bank-b"), "another bank's rows must survive");
+    assert.ok(!after.transactions.some(t => t.id === "pending-a"));
+    assert.ok(after.transactions.some(t => t.id === "posted-a"));
+    assert.equal(after.accounts.find(a => a.id === "account-bank-a")?.minDueCents, 1234);
+    assert.equal(after.items.find(i => i.id === "bank-a")?.cursor, "complete-cursor");
+  }, path => path === "/transactions/sync" ? mockResponse(200, JSON.stringify(delta({
+    added: [transaction("pending-a", 5, { pending: true }), transaction("posted-a", 5, { pending_transaction_id: "pending-a" })],
+    modified: [transaction("txn-bank-a", 9.87)],
+    removed: [{ transaction_id: "txn-bank-b", account_id: "account-bank-b" }],
+  }))) : standardProvider(path));
+});
+
+test("same-bank removed transaction object actually deletes its row", async () => {
+  await fixture();
+  await providerCheck(async () => {
+    await syncItem("bank-a");
+    assert.ok(!(await snapshot()).transactions.some(t => t.id === "txn-bank-a"));
+  }, path => path === "/transactions/sync"
+    ? mockResponse(200, JSON.stringify(delta({ removed: [{ transaction_id: "txn-bank-a", account_id: "account-bank-a" }] })))
+    : standardProvider(path));
+});
+
+test("failed second page leaves accounts, transactions, payment facts and cursor unchanged", async () => {
+  await fixture();
+  const before = await snapshot();
+  await providerCheck(async () => {
+    await assert.rejects(syncItem("bank-a"));
+    assert.deepEqual(await snapshot(), before);
+  }, (path, body) => {
+    if (path !== "/transactions/sync") return standardProvider(path);
+    if (body.cursor) throw new Error("dummy page outage");
+    return mockResponse(200, JSON.stringify(delta({
+      added: [transaction("must-not-appear", 99)], next_cursor: "page-two", has_more: true,
+    })));
+  });
+});
+
+test("liability failure preserves all previously displayed payment facts", async () => {
+  await fixture();
+  await db.update(accounts).set({ minDueCents: 999, dueDate: "2026-12-01" });
+  const before = await snapshot();
+  await providerCheck(async () => {
+    await assert.rejects(syncItem("bank-a"));
+    assert.deepEqual(await snapshot(), before);
+  }, path => {
+    if (path === "/liabilities/get") throw new Error("dummy unavailable liabilities");
+    return standardProvider(path);
+  });
+});
+
+test("pagination mutation restarts from original cursor and discards the abandoned pages", async () => {
+  await fixture();
+  const cursors: unknown[] = [];
+  let restarted = false;
+  await providerCheck(async () => {
+    await syncItem("bank-a");
+    assert.deepEqual(cursors, [undefined, "page-two", undefined]);
+    const after = await snapshot();
+    assert.ok(!after.transactions.some(t => t.id === "abandoned"));
+    assert.ok(after.transactions.some(t => t.id === "fresh"));
+  }, (path, body) => {
+    if (path !== "/transactions/sync") return standardProvider(path);
+    cursors.push(body.cursor);
+    if (body.cursor === "page-two") {
+      restarted = true;
+      return mockResponse(400, JSON.stringify({ error_code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" }));
+    }
+    return mockResponse(200, JSON.stringify(delta(restarted
+      ? { added: [transaction("fresh", 2)] }
+      : { added: [transaction("abandoned", 1)], next_cursor: "page-two", has_more: true })));
+  });
+});
+
+test("an in-flight sync cannot resurrect a bank deleted while waiting for upstream", async () => {
+  await fixture();
+  await providerCheck(async () => {
+    await syncItem("bank-a");
+    const after = await snapshot();
+    assert.ok(!after.items.some(i => i.id === "bank-a"));
+    assert.ok(!after.accounts.some(a => a.itemId === "bank-a"));
+    assert.ok(!after.transactions.some(t => t.itemId === "bank-a"));
+  }, async path => {
+    if (path !== "/transactions/sync") return standardProvider(path);
+    await disconnectItem(db, await bank(), async () => ({}));
+    return mockResponse(200, JSON.stringify(delta({ added: [transaction("no-resurrection", 1)] })));
+  });
+});
+
+test("linking saves encrypted token before optional metadata and reports initial-sync failure honestly", async () => {
+  await fixture();
+  await routes();
+  await providerCheck(async () => {
+    const result = await invoke("/api/plaid/exchange", { public_token: "dummy-public" });
+    assert.equal(result.status, 200);
+    assert.match(result.payload.warnings[0], /initial sync did not complete/);
+    const saved = await bank("bank-new");
+    assert.ok(saved.accessToken.startsWith("v1:"));
+    assert.equal(decryptAccessToken(saved.accessToken), "dummy-new-token");
+    assert.ok(!JSON.stringify(result.payload).includes("dummy-new-token"));
+  }, path => {
+    if (path === "/item/public_token/exchange") {
+      return mockResponse(200, JSON.stringify({ item_id: "bank-new", access_token: "dummy-new-token" }));
+    }
+    throw new Error("dummy metadata or initial sync outage");
+  });
+});
+
+test("failed link persistence compensates by revoking the new grant", async () => {
+  await fixture();
+  await routes();
+  await db.run(sql`CREATE TRIGGER fail_dummy_link BEFORE INSERT ON items
+    WHEN NEW.id = 'bank-new' BEGIN SELECT RAISE(ABORT, 'dummy save failure'); END`);
+  let revoked = false;
+  try {
+    await providerCheck(async () => {
+      const result = await invoke("/api/plaid/exchange", { public_token: "dummy-public" });
+      assert.equal(result.status, 502);
+      assert.equal(result.payload.code, "LINK_NOT_SAVED");
+      assert.ok(revoked);
+      assert.equal(await bank("bank-new"), undefined);
+    }, (path, body) => {
+      if (path === "/item/public_token/exchange") return mockResponse(200, JSON.stringify({ item_id: "bank-new", access_token: "dummy-new-token" }));
+      assert.equal(path, "/item/remove");
+      assert.equal(body.access_token, "dummy-new-token");
+      revoked = true;
+      return mockResponse();
+    });
+  } finally {
+    await db.run(sql`DROP TRIGGER fail_dummy_link`);
+  }
+});
+
+test("authenticated encryption detects tampering and wrong keys", () => {
+  process.env.TOKEN_ENCRYPTION_KEY = "dummy-test-encryption-key-not-for-production";
+  const encrypted = encryptAccessToken("dummy-private-token");
+  assert.ok(!encrypted.includes("dummy-private-token"));
+  assert.equal(decryptAccessToken(encrypted), "dummy-private-token");
+  const pieces = encrypted.split(":");
+  const ciphertext = Buffer.from(pieces[3], "base64url");
+  ciphertext[0] ^= 1;
+  pieces[3] = ciphertext.toString("base64url");
+  assert.throws(() => decryptAccessToken(pieces.join(":")));
+  process.env.TOKEN_ENCRYPTION_KEY = "another-dummy-test-key-not-for-production";
+  assert.throws(() => decryptAccessToken(encrypted));
+  process.env.TOKEN_ENCRYPTION_KEY = "dummy-test-encryption-key-not-for-production";
+});
+
+test("production config rejects short/numeric passwords and absent encryption key", () => {
+  const env = {
+    NODE_ENV: "production", APP_PIN: "dummy-long-test-password",
+    PLAID_CLIENT_ID: "dummy-client", PLAID_SECRET: "dummy-secret",
+    TOKEN_ENCRYPTION_KEY: "dummy-long-test-key-never-use-in-production",
+  };
+  assert.doesNotThrow(() => validateProductionConfig(env));
+  assert.throws(() => validateProductionConfig({ ...env, APP_PIN: "1234" }));
+  assert.throws(() => validateProductionConfig({ ...env, APP_PIN: "1".repeat(30) }));
+  assert.throws(() => validateProductionConfig({ ...env, TOKEN_ENCRYPTION_KEY: undefined }));
+  assert.throws(() => validateProductionConfig({ ...env, PLAID_ENV: "typo" }));
+});
+
+test("state never exposes cursors/tokens, real connections hide demo fixtures", async () => {
+  await fixture();
+  await seedDemoData();
+  await db.update(items).set({ cursor: "dummy-private-cursor" }).where(eq(items.id, "bank-a"));
+  await routes();
+  const { payload } = await invoke("/api/state", undefined, "GET");
+  assert.equal(payload.items.length, 2);
+  assert.ok(payload.items.every((i: any) => !i.isDemo && !("accessToken" in i) && !("cursor" in i)));
+  assert.ok(payload.accounts.every((a: any) => a.itemId !== "demo"));
+  assert.ok(payload.transactions.every((t: any) => t.itemId !== "demo"));
+  assert.ok(!JSON.stringify(payload).includes("dummy-private-cursor"));
+});
+
+test("client 401 clears the in-memory password and emits the lock event", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  let event = "";
+  globalThis.window = { dispatchEvent: (e: Event) => { event = e.type; return true; } } as Window & typeof globalThis;
+  globalThis.fetch = async () => mockResponse(401);
+  setPin("dummy-unlocked-password");
+  try {
+    await assert.rejects(api.state(), LockedError);
+    assert.equal(getPin(), "");
+    assert.equal(event, "card-tracker:locked");
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.window = originalWindow;
+    setPin("");
+  }
+});
+
+test("missing account snapshot cannot mark retained balances as freshly synced", async () => {
+  await fixture();
+  const before = await snapshot();
+  await providerCheck(async () => {
+    await assert.rejects(syncItem("bank-a"), /Account access changed/);
+    assert.deepEqual(await snapshot(), before);
+  }, path => {
+    if (path === "/accounts/balance/get") return mockResponse(200, JSON.stringify({ accounts: [] }));
+    if (path === "/transactions/sync") return mockResponse(200, JSON.stringify(delta()));
+    return standardProvider(path);
+  });
+});
+
+test("unknown balance cannot silently reuse old numbers and advance complete-sync time", async () => {
+  await fixture();
+  const before = await snapshot();
+  await providerCheck(async () => {
+    await assert.rejects(syncItem("bank-a"), /balance is unavailable/);
+    assert.deepEqual(await snapshot(), before);
+  }, path => {
+    if (path === "/accounts/balance/get") {
+      const data: any = balances();
+      data.accounts[0].balances.current = null;
+      return mockResponse(200, JSON.stringify(data));
+    }
+    if (path === "/transactions/sync") return mockResponse(200, JSON.stringify(delta()));
+    return standardProvider(path);
+  });
+});
+
+test("production legacy plaintext tokens fail closed without contacting provider or deleting", async () => {
+  await fixture();
+  await db.update(items).set({ accessToken: "dummy-legacy-plaintext" }).where(eq(items.id, "bank-a"));
+  process.env.NODE_ENV = "production";
+  const before = await snapshot();
+  await providerCheck(async () => {
+    await assert.rejects(syncItem("bank-a"), /legacy bank token/);
+    await assert.rejects(disconnectItem(db, await bank(), async () => assert.fail("must not call provider")), DisconnectError);
+    assert.deepEqual(await snapshot(), before);
+  }, () => assert.fail("legacy token must never be sent to provider"));
+});
+
+test("revocation-marker write failure retains records but does not pretend outcome recovery succeeded", async () => {
+  await fixture();
+  const before = await snapshot();
+  await db.run(sql`CREATE TRIGGER fail_dummy_marker BEFORE UPDATE OF access_token ON items
+    WHEN NEW.access_token LIKE 'revoked:%' BEGIN SELECT RAISE(ABORT, 'dummy marker failure'); END`);
+  let upstreamAcknowledged = false;
+  try {
+    await assert.rejects(disconnectItem(db, await bank(), async () => { upstreamAcknowledged = true; }));
+    assert.ok(upstreamAcknowledged);
+    assert.deepEqual(await snapshot(), before);
+  } finally {
+    await db.run(sql`DROP TRIGGER fail_dummy_marker`);
+  }
+  // Provider semantics for a second removal are not assumed. A rejected retry
+  // keeps records and requires owner-side reconciliation, as documented.
+  await assert.rejects(disconnectItem(db, await bank(), async () => { throw new Error("dummy already absent"); }), DisconnectError);
+  assert.deepEqual(await snapshot(), before);
+});

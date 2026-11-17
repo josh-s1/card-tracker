@@ -38,12 +38,16 @@ async function plaidFetch(endpoint: string, body: Record<string, unknown>) {
       secret: process.env.PLAID_SECRET,
       ...body,
     }),
+    signal: AbortSignal.timeout(15_000),
   });
-  const json: any = await res.json().catch(() => ({}));
+  const json: any = await res.json().catch(() => null);
+  if (!json || typeof json !== "object" || Array.isArray(json)) {
+    throw new PlaidError("The bank-data service returned an invalid response. Please retry.", 502, "INVALID_RESPONSE");
+  }
   if (!res.ok) {
     throw new PlaidError(
-      json?.error_message || `Plaid request failed (${res.status})`,
-      res.status === 400 ? 502 : res.status,
+      "The bank-data request did not complete. Please retry or reconnect the bank if required.",
+      502,
       json?.error_code,
     );
   }

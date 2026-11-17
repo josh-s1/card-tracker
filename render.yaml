@@ -3,11 +3,16 @@ services:
     name: card-tracker
     runtime: node
     plan: free
-    buildCommand: npm install --include=dev && npm run build
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
+      - key: PLAID_ENV
+        value: production
+      # Keep this key unchanged; losing it makes stored bank tokens unreadable.
+      - key: TOKEN_ENCRYPTION_KEY
+        generateValue: true
       # These four are secrets — enter them in the Render dashboard
       - key: TURSO_DATABASE_URL
         sync: false

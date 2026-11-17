@@ -12,6 +12,7 @@ interface Config {
   plaidConfigured: boolean;
   plaidEnv: string;
   pinRequired: boolean;
+  demoEnabled: boolean;
 }
 
 export default function ConnectPage() {
@@ -24,7 +25,7 @@ export default function ConnectPage() {
     queryKey: ["config", pin],
     queryFn: api.config,
   });
-  const { data, isLoading } = useQuery<AppState>({
+  const { data, isLoading, error: stateError, refetch: refetchState } = useQuery<AppState>({
     queryKey: ["state", pin],
     queryFn: api.state,
   });
@@ -59,6 +60,7 @@ export default function ConnectPage() {
       toast({ title: "Bank disconnected", description: "Its cards and transactions were removed." });
     },
     onError: (e: Error) => {
+      invalidate();
       toast({ title: "Could not disconnect", description: e.message, variant: "destructive" });
     },
   });
@@ -69,13 +71,20 @@ export default function ConnectPage() {
       invalidate();
       toast({ title: "Sample data loaded", description: "Three example cards with sample transactions." });
     },
+    onError: (e: Error) => {
+      toast({ title: "Could not load samples", description: e.message, variant: "destructive" });
+    },
   });
 
   const clearReal = useMutation({
     mutationFn: api.clearReal,
     onSuccess: () => {
       invalidate();
-      toast({ title: "Real bank data cleared", description: "Sample data remains untouched." });
+      toast({ title: "Banks disconnected", description: "Bank access was revoked and local bank data removed. Sample data remains untouched." });
+    },
+    onError: (e: Error) => {
+      invalidate();
+      toast({ title: "Disconnection incomplete", description: e.message, variant: "destructive" });
     },
   });
 
@@ -89,14 +98,20 @@ export default function ConnectPage() {
         onSuccess: async (publicToken: string) => {
           toast({ title: "Connecting your bank…", description: "Pulling balances and transactions." });
           try {
-            await api.exchange(publicToken);
+            const result = await api.exchange(publicToken);
             invalidate();
-            toast({ title: "Bank connected", description: "Your cards are now being tracked." });
+            toast(result.warnings?.length
+              ? { title: "Bank connected; sync needs attention", description: result.warnings.join(" "), variant: "destructive" }
+              : { title: "Bank connected", description: "Your cards are now being tracked." });
           } catch (e: any) {
+            invalidate();
             toast({ title: "Connection failed", description: e.message, variant: "destructive" });
+          } finally {
+            setLinkBusy(false);
+            handler.destroy?.();
           }
         },
-        onExit: () => setLinkBusy(false),
+        onExit: () => { setLinkBusy(false); handler.destroy?.(); },
       });
       handler.open();
     } catch (e: any) {
@@ -109,6 +124,17 @@ export default function ConnectPage() {
     return <Skeleton className="h-96 w-full rounded-2xl" />;
   }
 
+  if (config.isError || stateError) {
+    return (
+      <div role="alert" className="space-y-3">
+        <p>Could not load bank connections. No connection or data changes were confirmed.</p>
+        <Button variant="outline" onClick={() => { config.refetch(); refetchState(); }}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
   if (!data) return null;
 
   const realItems = data.items.filter((i) => !i.isDemo);
@@ -118,8 +144,8 @@ export default function ConnectPage() {
     <div>
       <h1 className="mb-1 text-[15px] font-semibold text-[#68757F]">Connect</h1>
       <p className="mb-5 text-sm text-[#68757F]">
-        Link your banks once — cards, balances and transactions then stay in sync
-        automatically.
+        Link your banks, then use Sync now to refresh. Verify balances and payment
+        details with your bank before making a payment.
       </p>
 
       {config.data?.plaidConfigured ? (
@@ -192,18 +218,24 @@ export default function ConnectPage() {
                       {nAccounts} card{nAccounts === 1 ? "" : "s"} ·{" "}
                       {nTxns} transaction{nTxns === 1 ? "" : "s"}
                       {item.lastSyncedAt
-                        ? ` · synced ${new Date(item.lastSyncedAt).toLocaleString(
+                        ? ` · last complete sync ${new Date(item.lastSyncedAt).toLocaleString(
                             "en-US",
                             { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" },
                           )}`
-                        : ""}
+                        : " · no complete sync yet"}
+                      {item.disconnectPending ? " · access revoked; retry to finish local cleanup" : ""}
                     </div>
                   </div>
                   <Button
                     variant="ghost"
                     size="icon"
                     aria-label={`Disconnect ${item.institutionName}`}
-                    onClick={() => removeMutation.mutate(item.id)}
+                    disabled={removeMutation.isPending || clearReal.isPending}
+                    onClick={() => {
+                      if (window.confirm(`Disconnect ${item.institutionName}? This revokes bank access and deletes its cards and transactions from this app.`)) {
+                        removeMutation.mutate(item.id);
+                      }
+                    }}
                     data-testid={`button-remove-${item.id}`}
                   >
                     <Trash2 size={16} className="text-[#B23B3B]" />
@@ -233,27 +265,32 @@ export default function ConnectPage() {
           <div className="rounded-xl bg-white p-3.5 shadow-[0_1px_2px_rgba(20,33,43,0.04)]">
             <div className="text-[15px] font-semibold">Demo cards</div>
             <div className="mt-0.5 text-xs text-[#68757F]">
-              Three sample cards — safe to explore, replaced by your real cards
-              when you connect.
+              Three sample cards. Sample controls never remove real bank records.
             </div>
           </div>
         )}
         <div className="flex gap-2">
-          <Button
-            variant="outline"
-            className="flex-1 border-[#D9DEE2] text-[13px]"
-            onClick={() => demoSeed.mutate()}
-            disabled={demoSeed.isPending}
-          >
-            Reload samples
-          </Button>
+          {config.data?.demoEnabled && (
+            <Button
+              variant="outline"
+              className="flex-1 border-[#D9DEE2] text-[13px]"
+              onClick={() => demoSeed.mutate()}
+              disabled={demoSeed.isPending || clearReal.isPending || removeMutation.isPending}
+            >
+              Reload samples
+            </Button>
+          )}
           <Button
             variant="outline"
             className="flex-1 border-[#D9DEE2] text-[13px] text-[#B23B3B]"
-            onClick={() => clearReal.mutate()}
-            disabled={clearReal.isPending || realItems.length === 0}
+            onClick={() => {
+              if (window.confirm("Disconnect all banks? This revokes bank access and deletes all real bank cards and transactions from this app.")) {
+                clearReal.mutate();
+              }
+            }}
+            disabled={clearReal.isPending || removeMutation.isPending || realItems.length === 0}
           >
-            Clear real data
+            Disconnect all banks
           </Button>
         </div>
       </div>

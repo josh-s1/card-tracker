@@ -1,4 +1,4 @@
-import { createContext, useState } from "react";
+import { createContext, useState, useEffect, useContext } from "react";
 import { Switch, Route, Router } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { queryClient } from "./lib/queryClient";
@@ -15,49 +15,6 @@ import ConnectPage from "@/pages/ConnectPage";
 import { api, setPin, getPin, LockedError } from "./lib/api";
 import { CreditCard, List, PieChart, Plug, Lock } from "lucide-react";
 import { Link } from "wouter";
-import { PREVIEW_STATE } from "./lib/previewState";
-
-// When the frontend is served without its backend (e.g. a static preview
-// deployment), fall back to the embedded sample data instead of showing errors.
-let previewMode = false;
-export const isPreviewMode = () => previewMode;
-const originalFetch = window.fetch;
-const jsonRes = (data: unknown) =>
-  new Response(JSON.stringify(data), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-const previewResponseFor = (url: string) => {
-  if (url.includes("/api/config")) {
-    return jsonRes({ plaidConfigured: false, plaidEnv: "static", pinRequired: false });
-  }
-  if (url.includes("/api/state")) return jsonRes(PREVIEW_STATE);
-  if (url.includes("/api/plaid/link-token")) {
-    return new Response(
-      JSON.stringify({ error: "Preview mode — bank connections need the hosted app." }),
-      { status: 400, headers: { "Content-Type": "application/json" } },
-    );
-  }
-  return jsonRes({ ok: true });
-};
-window.fetch = async (input: any, init?: any) => {
-  const url = typeof input === "string" ? input : (input?.url ?? "");
-  if (url.includes("/api/")) {
-    try {
-      const res = await originalFetch(input, init);
-      if (res.ok) return res;
-      if (res.status === 404 || res.status === 405) {
-        previewMode = true;
-        return previewResponseFor(url);
-      }
-      return res;
-    } catch {
-      previewMode = true;
-      return previewResponseFor(url);
-    }
-  }
-  return originalFetch(input, init);
-};
 
 export const PinContext = createContext<{ pin: string; setPin: (p: string) => void }>({
   pin: "",
@@ -65,6 +22,7 @@ export const PinContext = createContext<{ pin: string; setPin: (p: string) => vo
 });
 
 function TabBar({ current }: { current: string }) {
+  const { pin, setPin: lock } = useContext(PinContext);
   const tabs = [
     { key: "cards", label: "Cards", icon: CreditCard, href: "/" },
     { key: "activity", label: "Activity", icon: List, href: "/activity" },
@@ -89,6 +47,11 @@ function TabBar({ current }: { current: string }) {
             </Link>
           );
         })}
+        {pin && (
+          <button type="button" onClick={() => lock("")} className="flex flex-1 flex-col items-center gap-1 rounded-lg py-1 text-xs text-[#68757F]">
+            <Lock size={21} /><span>Lock</span>
+          </button>
+        )}
       </div>
     </nav>
   );
@@ -107,11 +70,6 @@ function Shell() {
           : "cards";
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col bg-[#F2F4F6] shadow-[0_0_40px_rgba(20,33,43,0.08)] sm:my-0">
-      {isPreviewMode() && (
-        <div className="bg-[#4A2C4F] px-4 py-1.5 text-center text-[11px] font-semibold uppercase tracking-wide text-white">
-          Preview — sample data
-        </div>
-      )}
       <main className="flex-1 px-4 pb-24 pt-6">
         <Switch>
           <Route path="/" component={CardsPage} />
@@ -138,8 +96,40 @@ function AppInner() {
   const updatePin = (p: string) => {
     setPin(p);
     setPinState(p);
-    queryClient.invalidateQueries();
+    if (!p) queryClient.clear();
+    else queryClient.invalidateQueries();
   };
+
+  useEffect(() => {
+    const lock = () => { setPin(""); setPinState(""); queryClient.clear(); };
+    window.addEventListener("card-tracker:locked", lock);
+    if (!pin) return () => window.removeEventListener("card-tracker:locked", lock);
+    let lastActivity = Date.now();
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      clearTimeout(timer);
+      timer = setTimeout(lock, Math.max(0, 15 * 60 * 1000 - (Date.now() - lastActivity)));
+    };
+    const activity = () => {
+      if (Date.now() - lastActivity >= 15 * 60 * 1000) return lock();
+      lastActivity = Date.now();
+      schedule();
+    };
+    const visibility = () => {
+      if (document.visibilityState === "visible" && Date.now() - lastActivity >= 15 * 60 * 1000) lock();
+    };
+    schedule();
+    window.addEventListener("pointerdown", activity);
+    window.addEventListener("keydown", activity);
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("card-tracker:locked", lock);
+      window.removeEventListener("pointerdown", activity);
+      window.removeEventListener("keydown", activity);
+      document.removeEventListener("visibilitychange", visibility);
+    };
+  }, [pin]);
 
   if (config.isLoading) {
     return (
@@ -152,7 +142,17 @@ function AppInner() {
     );
   }
 
-  const needsPin = config.data?.pinRequired && !pin;
+  // A missing backend must never be interpreted as "no password required".
+  if (config.isError || !config.data) {
+    return (
+      <div role="alert" className="flex min-h-dvh flex-col items-center justify-center gap-3 px-6 text-center">
+        <p>Could not reach Card Tracker. No connection or data changes were confirmed.</p>
+        <button type="button" onClick={() => config.refetch()}>Retry</button>
+      </div>
+    );
+  }
+
+  const needsPin = config.data.pinRequired && !pin;
 
   return (
     <PinContext.Provider value={{ pin, setPin: updatePin }}>

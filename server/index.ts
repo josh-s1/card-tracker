@@ -4,6 +4,7 @@ import type { Request } from 'express';
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "node:http";
+import { validateProductionConfig } from "./token-vault";
 
 const app = express();
 app.disable("x-powered-by");
@@ -12,6 +13,11 @@ app.set("trust proxy", 1);
 app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Content-Security-Policy", "frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
+  if (process.env.NODE_ENV === "production") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000");
+  }
   next();
 });
 const httpServer = createServer(app);
@@ -58,9 +64,7 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  if (process.env.NODE_ENV === "production" && !process.env.APP_PIN) {
-    throw new Error("APP_PIN is required in production.");
-  }
+  validateProductionConfig();
   const { ensureSchema } = await import("./storage");
   await ensureSchema();
   await registerRoutes(httpServer, app);

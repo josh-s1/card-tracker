@@ -1,86 +1,120 @@
-# Card Tracker — Hosting Guide
+# Card Tracker hosting guide
 
-This document explains how to get your personal Card Tracker running with real bank
-logins, from zero, with no coding. Total time: about 20 minutes.
+This is a single-user bank-data tracker. The readiness changes must be reviewed,
+configured and explicitly approved for deployment before connecting a real bank.
+Pushing this work to a separate branch is not a deployment.
 
-## What you're building
+## Existing service: changes needed before deployment
 
-The app has two parts:
+Use the Render dashboard's Environment settings. Never paste passwords, API
+secrets, database tokens or encryption keys into chat, source files or GitHub.
+Do not save environment changes until you are ready for the resulting restart or
+redeployment.
 
-1. **The app itself** (this folder) — a Node.js server that serves the mobile web app and talks to Plaid.
-2. **Two free cloud services:**
-   - **Turso** — holds your data (cards, balances, transactions). Free, no credit card.
-   - **Render** — runs the app 24/7 at a permanent URL. Free, no credit card.
-   - **Plaid** — connects to your banks (US/Canada). Free Trial plan, no credit card.
+| Variable | Required value |
+| --- | --- |
+| `NODE_ENV` | `production` |
+| `APP_PIN` | A unique password-manager-generated password, at least 20 characters, not just digits. The variable keeps its old name but short PINs are no longer accepted. |
+| `TOKEN_ENCRYPTION_KEY` | A separate cryptographically random secret, at least 32 characters. Use a password manager's random generator; do not reuse the app password. |
+| `PLAID_ENV` | `production` for real connections, `sandbox` for Plaid test connections. |
+| `PLAID_CLIENT_ID` | Your current Plaid client ID. |
+| `PLAID_SECRET` | The current secret for the selected Plaid environment. |
+| `TURSO_DATABASE_URL` | Your intended persistent Turso database URL. |
+| `TURSO_AUTH_TOKEN` | A current token restricted to that database, with only the permissions this app requires. |
 
-Free-tier note: Render's free instances sleep after ~15 minutes of inactivity.
-Your data is safe (it lives in Turso); the app just takes about a minute to wake up
-on the first visit after a long idle period.
+Keep a secure backup of `TOKEN_ENCRYPTION_KEY` separate from the database.
+Changing or losing it makes existing encrypted bank tokens unreadable. Encryption
+protects stored bank tokens, not the transaction rows, and does not protect
+against compromise of the running server or an attacker holding both the
+database credentials and the encryption key.
 
-## Step 1 — Plaid account (bank connections)
+The application refuses production startup without the stronger password, or
+without an encryption key when Plaid is configured. The `render.yaml` blueprint
+generates an encryption key for newly created blueprint services; it does not
+update the environment of an existing manually configured service.
 
-1. Go to https://dashboard.plaid.com and sign up.
-2. Verify your email and finish onboarding (choose "Personal" use when asked).
-3. On the left menu, go to **Team settings → API keys**.
-4. Copy the **Client ID** and the **Production secret key**.
-   (The Trial plan gives you real bank data with up to 10 connected banks.)
+No bank is expected to have been connected yet. If real connections already
+exist with old plaintext tokens, stop before deploying: they require a controlled
+encryption migration or provider-side revocation/reconnection. This update does
+not silently read legacy plaintext tokens in production.
 
-Save those two values for Step 4.
+## Deployment settings
 
-## Step 2 — Turso account (your data)
+When deployment is explicitly approved:
 
-1. Go to https://turso.tech and sign up (works with GitHub or Google, no card).
-2. Click **Create database**, name it `card-tracker`, pick the closest region.
-3. Open the database page and copy its **URL** (looks like `libsql://card-tracker-....turso.io`).
-4. On the same database page, find **Database tokens** (under the Connect/settings area),
-   click **Generate token**, and copy the token.
+- **Repository and branch:** select the reviewed branch deliberately. Check the
+  service's current auto-deploy and preview settings first.
+- **Build command:** `npm ci --include=dev && npm run build`
+- **Start command:** `npm start`
+- **Persistent storage:** confirm the intended Turso database is configured.
+  The development fallback SQLite file is not suitable for ephemeral hosting.
+- **Runtime:** use a supported Node version compatible with the locked
+  dependencies. Do not omit development dependencies during the build.
 
-Save those two values for Step 4.
+Before approving a deployment, verify a clean build using the updated lockfile,
+then check the deployed password gate, logout/idle lock, Plaid SDK loading,
+browser console, and mobile layout. Source-level and dummy-fixture tests do not
+replace these deployment checks.
 
-## Step 3 — Put this folder on GitHub
+## Account and data safety checklist
 
-1. Go to https://github.com and create a free account (if you don't have one).
-2. Click **New repository**, name it `card-tracker`, choose **Public**, leave every
-   checkbox empty, and click **Create repository**.
-3. On the next page, click the link **"uploading an existing file"**.
-4. Unzip `card-tracker-hosting.zip` on your computer, then drag the unzipped
-   folder's contents (all files and folders) into the GitHub upload page.
-5. Click **Commit changes**.
+- **Previously shared credentials:** revoke the GitHub PAT previously posted in
+  chat. Plaid and Turso credentials were reported rotated; verify that the old
+  values are actually revoked rather than merely replaced in the app.
+- **Account protection:** enable MFA on GitHub, Render, Turso, Plaid and your bank
+  accounts. The app itself remains password-only, not MFA-protected.
+- **Access limits:** restrict team membership and database-token scope. Avoid
+  sharing the app password or connecting banks from an untrusted/shared device.
+- **Recovery:** confirm database backup retention, restore procedure and
+  deletion/retention policy in Turso. These cannot be inferred from repository
+  code. Test restoration only with disposable data first.
+- **Bank coverage:** confirm your particular institution, accounts and required
+  products are enabled in Plaid before linking. Do not assume all banks expose
+  complete payment facts.
 
-## Step 4 — Deploy on Render
+## Connecting and maintaining bank data
 
-1. Go to https://render.com and sign up (choose **Sign up with GitHub** — this is
-   what lets Render see your repository).
-2. Click **New + → Web Service**.
-3. Choose the `card-tracker` repository → **Connect**.
-4. Fill in:
-   - Name: `card-tracker`
-   - Region: closest to you
-   - Instance type: **Free**
-   - Build command: `npm install && npm run build`
-   - Start command: `npm start`
-5. Click **Environment** (or Advanced → Add environment variable) and add these
-   variables one by one:
-   - `TURSO_DATABASE_URL` → the Turso URL from Step 2
-   - `TURSO_AUTH_TOKEN` → the Turso token from Step 2
-   - `PLAID_CLIENT_ID` → from Step 1
-   - `PLAID_SECRET` → from Step 1
-   - `APP_PIN` (optional) → any 4+ digit PIN to lock your app behind a login screen
-6. Click **Deploy Web Service** and wait for the build (a few minutes).
-7. When it's live, open the URL at the top of the page (e.g. `https://card-tracker-xxxx.onrender.com`).
+Only after approval and the checks above, open the app, unlock it, and use
+Connect a bank. Enter bank credentials only in the bank/Plaid authentication
+flow, never in chat or an app configuration field.
 
-## Step 5 — Connect your cards
+Use Connect → Sync now to refresh. This version has no background scheduler or
+webhook processing. "Last complete sync" describes the last successfully stored
+snapshot, not guaranteed real-time bank data. An initial-sync warning means the
+connection was saved but the financial snapshot is not ready.
 
-1. Open your app URL on your phone.
-2. Go to the **Connect** tab → **Connect a bank**.
-3. Sign in with your bank credentials (Chase, Amex, Wells Fargo, Citi, etc. —
-   all major US and Canadian banks are supported).
-4. Your cards appear in the **Cards** tab with balances, due dates, APR, and transactions.
-5. Add to Home Screen: in your phone browser, tap Share → **Add to Home Screen**.
+Confirm payment amounts and due dates directly with the bank. Missing fields,
+unavailable products, removed accounts and provider delays can make this tracker
+incomplete; do not rely on it as your only bill-payment reminder.
 
-## Maintenance
+If a previously known account disappears from the provider response, or a current
+balance is unavailable, this version rejects the refresh and keeps the prior
+snapshot and timestamp. It does not silently delete account history or mark old
+balances as current. Review account-sharing settings and the connection before
+retrying; an inactive-account reconciliation interface is not implemented.
 
-- **Refresh data**: Connect tab → **Sync now** (transactions update on each visit too).
-- **Remove a bank**: Connect tab → the bank card → Remove.
-- **App updates**: edit the GitHub repo (or have this assistant do it), and Render
-  redeploys automatically. Your data in Turso is never touched.
+Use Remove bank to revoke access and delete that bank's local records. If
+revocation fails, records remain for retry. If the provider acknowledges
+revocation but local cleanup fails, a stored marker allows cleanup to be retried
+without a second revocation request. If the provider succeeds but its reply is
+lost, or the marker cannot be saved, the app cannot prove the outcome; confirm
+access removal with your bank/Plaid before manual cleanup. Local deletion is not
+a promise that historical database backups have also been purged.
+
+## Local regression checks
+
+`npm test` runs dummy-only tests inside a Linux sandbox. `npm run check:sandbox`
+runs TypeScript checking in the same confinement; `npm run check` is the normal
+unsandboxed developer type-check command.
+
+The sandbox command requires Python 3, bubblewrap, libseccomp, GNU timeout,
+prlimit, a Node binary at `/usr/local/bin/node`, and already installed local
+dependencies. It has no external network or ambient credentials, uses read-only
+source/dependencies, permits writes only in a 16 MiB scratch filesystem, and
+limits CPU, memory, process creation, files and wall-clock time. It does not
+install packages or contact Turso/Plaid.
+
+Tests cover the password middleware in process, sample-data isolation, deletion
+and retry behavior, encrypted tokens, sync pagination/rollback/reconciliation,
+link persistence, redacted state and client authentication errors. They are not
+a full browser end-to-end test or a guarantee of production security.

@@ -70,4 +70,4 @@ export type InsertTransaction = z.infer<typeof insertTransactionSchema>;
 export type Transaction = typeof transactions.$inferSelect;
 
 /** Shared client-facing types (access tokens stripped). */
-export type SafeItem = Omit<Item, "accessToken">;
+export type SafeItem = Omit<Item, "accessToken" | "cursor"> & { disconnectPending?: boolean };

@@ -3,6 +3,7 @@
  * computed relative to "today" so the app always looks fresh.
  */
 import { db } from "./storage";
+import { eq } from "drizzle-orm";
 import { items, accounts, transactions } from "@shared/schema";
 
 function iso(offsetDays: number): string {
@@ -128,60 +129,71 @@ const DEMO_CARDS: DemoCard[] = [
 ];
 
 export async function seedDemoData() {
-  await db.delete(transactions);
-  await db.delete(accounts);
-  await db.delete(items);
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Sample mutations are disabled in production.");
+  }
 
-  await db.insert(items).values({
-    id: "demo",
-    institutionId: "demo",
-    institutionName: "Demo Bank (sample data)",
-    accessToken: "",
-    isDemo: true,
-    createdAt: new Date().toISOString(),
-  });
+  await db.transaction(async (tx) => {
+    // Never reset real connections, including their stored revocation tokens.
+    const demoItems = await tx.select().from(items).where(eq(items.isDemo, true));
+    for (const item of demoItems) {
+      await tx.delete(transactions).where(eq(transactions.itemId, item.id));
+      await tx.delete(accounts).where(eq(accounts.itemId, item.id));
+      await tx.delete(items).where(eq(items.id, item.id));
+    }
 
-  for (const card of DEMO_CARDS) {
-    await db.insert(accounts).values({
-      id: card.id,
-      itemId: "demo",
-      name: card.name,
-      officialName: `${card.name} ${card.network} ${card.last4}`,
-      mask: card.last4,
-      type: "credit",
-      subtype: "credit card",
-      network: card.network,
-      color: card.color,
-      currency: "USD",
-      balanceCents: Math.round(card.balance * 100),
-      limitCents: Math.round(card.limit * 100),
-      apr: card.apr,
-      dueDate: iso(card.dueOff),
-      minDueCents: Math.round(card.minDue * 100),
-      statementBalanceCents: Math.round(card.statementBalance * 100),
-      statementCloseDate: iso(card.closesOff),
-      lastPaymentCents: Math.round(card.lastPayment.amt * 100),
-      lastPaymentDate: iso(card.lastPayment.off),
+    await tx.insert(items).values({
+      id: "demo",
+      institutionId: "demo",
+      institutionName: "Demo Bank (sample data)",
+      accessToken: "",
+      isDemo: true,
+      createdAt: new Date().toISOString(),
     });
 
-    for (const t of card.txns) {
-      await db.insert(transactions).values({
-        id: `${card.id}-${t.off}-${t.m.replace(/\W+/g, "")}`,
-        accountId: card.id,
+    for (const card of DEMO_CARDS) {
+      await tx.insert(accounts).values({
+        id: card.id,
         itemId: "demo",
-        date: iso(t.off),
-        name: t.m,
-        merchantName: t.m,
-        amountCents: Math.round(t.a * 100),
-        category: t.c,
-        pending: Boolean(t.p),
+        name: card.name,
+        officialName: `${card.name} ${card.network} ${card.last4}`,
+        mask: card.last4,
+        type: "credit",
+        subtype: "credit card",
+        network: card.network,
+        color: card.color,
+        currency: "USD",
+        balanceCents: Math.round(card.balance * 100),
+        limitCents: Math.round(card.limit * 100),
+        apr: card.apr,
+        dueDate: iso(card.dueOff),
+        minDueCents: Math.round(card.minDue * 100),
+        statementBalanceCents: Math.round(card.statementBalance * 100),
+        statementCloseDate: iso(card.closesOff),
+        lastPaymentCents: Math.round(card.lastPayment.amt * 100),
+        lastPaymentDate: iso(card.lastPayment.off),
       });
+
+      for (const t of card.txns) {
+        await tx.insert(transactions).values({
+          id: `${card.id}-${t.off}-${t.m.replace(/\W+/g, "")}`,
+          accountId: card.id,
+          itemId: "demo",
+          date: iso(t.off),
+          name: t.m,
+          merchantName: t.m,
+          amountCents: Math.round(t.a * 100),
+          category: t.c,
+          pending: Boolean(t.p),
+        });
+      }
     }
-  }
+  });
 }
 
 /** Seed demo data on first boot when the DB is empty. */
 export async function seedIfEmpty() {
+  if (process.env.NODE_ENV === "production") return;
   const existing = await db.select().from(items);
   if (existing.length === 0) await seedDemoData();
 }
