@@ -1,17 +1,13 @@
 import { useContext, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PinContext } from "@/App";
-import { api } from "@/lib/api";
-import { cardName, type AppState } from "@/lib/format";
+import { useDashboardState } from "@/lib/dashboard-state";
+import { cardName } from "@/lib/format";
 import { SpendingPanel } from "./SpendingPanel";
 
 export default function SpendingPage() {
   const { pin } = useContext(PinContext);
-  const { data, isLoading, error } = useQuery<AppState>({
-    queryKey: ["state", pin],
-    queryFn: api.state,
-  });
+  const { data, isLoading, error } = useDashboardState(pin);
   const [card, setCard] = useState<string>("all");
 
   if (isLoading) return <Skeleton className="h-96 w-full rounded-2xl" />;

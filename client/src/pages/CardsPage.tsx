@@ -1,9 +1,8 @@
 import { useContext } from "react";
 import { Link } from "wouter";
-import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PinContext } from "@/App";
-import { api } from "@/lib/api";
+import { useDashboardState } from "@/lib/dashboard-state";
 import {
   money,
   money0,
@@ -11,15 +10,12 @@ import {
   fmtDate,
   creditCards,
   cardName,
-  type AppState,
+  bankSyncLabel,
 } from "@/lib/format";
 
 export default function CardsPage() {
   const { pin } = useContext(PinContext);
-  const { data, isLoading, error } = useQuery<AppState>({
-    queryKey: ["state", pin],
-    queryFn: api.state,
-  });
+  const { data, isLoading, error } = useDashboardState(pin);
 
   if (isLoading) return <CardsSkeleton />;
   if (error) return <ErrorNote message={(error as Error).message} />;
@@ -61,6 +57,9 @@ export default function CardsPage() {
         </div>
       )}
 
+      <Link href="/rewards" className="mt-4 block rounded-xl border border-[#D9DEE2] bg-white px-4 py-3 text-sm font-semibold text-[#1F3A5F]">
+        Which card should I use?
+      </Link>
       <div className="mt-6 space-y-3.5">
         {cards.map((c) => {
           const util = c.limitCents
@@ -98,6 +97,7 @@ export default function CardsPage() {
                   {c.dueDate ? `Payment ${dueText(c.dueDate)}` : ""}
                 </span>
               </div>
+              <p className="mt-2.5 text-xs opacity-90">{bankSyncLabel(data.items.find(i => i.id === c.itemId))}</p>
             </Link>
           );
         })}

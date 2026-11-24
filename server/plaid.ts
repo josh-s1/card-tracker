@@ -111,6 +111,7 @@ const CATEGORY_MAP: Record<string, string> = {
   GROCERIES: "Groceries",
   TRANSPORTATION: "Transport",
   RETAIL_AND_GOODS_SERVICES: "Shopping",
+  GENERAL_MERCHANDISE: "Shopping",
   GENERAL_SERVICES: "Services",
   PERSONAL_SERVICES: "Services",
   HEALTH_AND_WELLNESS: "Health",
@@ -120,6 +121,8 @@ const CATEGORY_MAP: Record<string, string> = {
   DIGITAL_PURCHASES: "Subscriptions",
   LOAN_PAYMENTS: "Payment",
   TRANSFER: "Payment",
+  TRANSFER_IN: "Payment",
+  TRANSFER_OUT: "Payment",
   PAYMENT: "Payment",
   BANK_FEES: "Fees",
   FEES: "Fees",
@@ -136,7 +139,10 @@ const CATEGORY_MAP: Record<string, string> = {
 export function mapCategory(
   personalFinancePrimary: string | null | undefined,
   fallbackType?: string | null | undefined,
+  detailed?: string | null | undefined,
 ): string {
+  if (detailed === "FOOD_AND_DRINK_GROCERIES") return "Groceries";
+  if (detailed === "FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR") return "Shopping";
   if (personalFinancePrimary && CATEGORY_MAP[personalFinancePrimary]) {
     return CATEGORY_MAP[personalFinancePrimary];
   }

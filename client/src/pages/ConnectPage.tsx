@@ -4,10 +4,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { PinContext } from "@/App";
-import { api, loadPlaidLink, getShowSamples, setShowSamples } from "@/lib/api";
-import type { AppState } from "@/lib/format";
+import { api, loadPlaidLink, setShowSamples } from "@/lib/api";
+import { useDashboardState, useSampleMode } from "@/lib/dashboard-state";
+import { bankSyncLabel } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
 import { Plug, RefreshCw, Trash2, Sparkles, ShieldCheck } from "lucide-react";
+import { Link } from "wouter";
 
 interface Config {
   plaidConfigured: boolean;
@@ -21,19 +23,17 @@ export default function ConnectPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [linkBusy, setLinkBusy] = useState(false);
-  const [samplesVisible, setSamplesVisible] = useState(getShowSamples);
+  const samplesVisible = useSampleMode();
 
   const config = useQuery<Config>({
     queryKey: ["config", pin],
     queryFn: api.config,
+    enabled: !samplesVisible,
   });
-  const { data, isLoading, error: stateError, refetch: refetchState } = useQuery<AppState>({
-    queryKey: ["state", pin],
-    queryFn: api.state,
-  });
+  const { data, isLoading, error: stateError, refetch: refetchState } = useDashboardState(pin);
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ["state", pin] });
+    queryClient.invalidateQueries({ queryKey: ["state", pin, false] });
   };
 
   const syncMutation = useMutation({
@@ -122,13 +122,39 @@ export default function ConnectPage() {
     }
   };
 
+  const sampleSwitch = (
+    <div className="mb-4 flex items-center justify-between gap-3 rounded-xl bg-white p-3.5">
+      <div>
+        <label htmlFor="show-sample-cards" className="text-sm font-semibold">Show sample cards</label>
+        <p id="sample-visibility-description" className="mt-0.5 text-xs text-[#68757F]">
+          Hides real cards and activity in every tab. Nothing is deleted.
+        </p>
+      </div>
+      <Switch id="show-sample-cards" aria-describedby="sample-visibility-description"
+        checked={samplesVisible} onCheckedChange={setShowSamples}
+        disabled={linkBusy || syncMutation.isPending || removeMutation.isPending || clearReal.isPending || demoSeed.isPending}
+        data-testid="switch-show-sample-cards" />
+    </div>
+  );
+
+  if (samplesVisible) return (
+    <div>
+      <h1 className="mb-3 text-[15px] font-semibold text-[#68757F]">Connect</h1>
+      {sampleSwitch}
+      <p className="rounded-xl bg-white p-3.5 text-sm text-[#41525E]">
+        Demo Bank · Fictional cards and transactions only. Turn samples off to manage real bank connections.
+      </p>
+    </div>
+  );
+
   if (isLoading || config.isLoading) {
-    return <Skeleton className="h-96 w-full rounded-2xl" />;
+    return <>{sampleSwitch}<Skeleton className="h-96 w-full rounded-2xl" /></>;
   }
 
   if (config.isError || stateError) {
     return (
       <div role="alert" className="space-y-3">
+        {sampleSwitch}
         <p>Could not load bank connections. No connection or data changes were confirmed.</p>
         <Button variant="outline" onClick={() => { config.refetch(); refetchState(); }}>
           Retry
@@ -140,7 +166,6 @@ export default function ConnectPage() {
   if (!data) return null;
 
   const realItems = data.items.filter((i) => !i.isDemo);
-  const hasDemo = data.items.some((i) => i.isDemo);
 
   return (
     <div>
@@ -149,6 +174,7 @@ export default function ConnectPage() {
         Link your banks, then use Sync now to refresh. Verify balances and payment
         details with your bank before making a payment.
       </p>
+      {sampleSwitch}
 
       {config.data?.plaidConfigured ? (
         <div className="rounded-2xl bg-white p-4 shadow-[0_1px_2px_rgba(20,33,43,0.04)]">
@@ -182,7 +208,7 @@ export default function ConnectPage() {
             </div>
             <div className="min-w-0">
               <div className="text-[15px] font-semibold">
-                Running on sample data
+                Bank connection not configured
               </div>
               <p className="mt-0.5 text-[13px] leading-relaxed text-[#68757F]">
                 The server doesn't have Plaid keys yet. Once they're added, a
@@ -194,6 +220,11 @@ export default function ConnectPage() {
         </div>
       )}
 
+      {data.accounts.some(a => a.type === "credit" && !a.rewardRules) && (
+        <Link href="/rewards" className="mt-3 block rounded-xl border border-[#D9DEE2] bg-white px-4 py-3 text-sm font-semibold text-[#1F3A5F]">
+          Set up rewards for your linked cards
+        </Link>
+      )}
       {realItems.length > 0 && (
         <>
           <div className="mb-2 mt-6 text-[15px] font-semibold">
@@ -219,13 +250,7 @@ export default function ConnectPage() {
                     <div className="mt-0.5 text-xs text-[#68757F]">
                       {nAccounts} card{nAccounts === 1 ? "" : "s"} ·{" "}
                       {nTxns} transaction{nTxns === 1 ? "" : "s"}
-                      {item.lastSyncedAt
-                        ? ` · last complete sync ${new Date(item.lastSyncedAt).toLocaleString(
-                            "en-US",
-                            { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" },
-                          )}`
-                        : " · no complete sync yet"}
-                      {item.disconnectPending ? " · access revoked; retry to finish local cleanup" : ""}
+                      {` · ${bankSyncLabel(item)}`}
                     </div>
                   </div>
                   <Button
@@ -261,44 +286,7 @@ export default function ConnectPage() {
         </>
       )}
 
-      <div className="mb-2 mt-6 text-[15px] font-semibold">Sample data</div>
-      <div className="space-y-2">
-        <div className="flex items-start justify-between gap-3 rounded-xl bg-white p-3.5">
-          <div className="min-w-0">
-            <label htmlFor="show-sample-cards" className="text-[15px] font-semibold">
-              Show sample cards
-            </label>
-            <p id="sample-visibility-description" className="mt-0.5 text-xs text-[#68757F]">
-              {realItems.length > 0
-                ? "Hidden while real banks are connected."
-                : !data.sampleDataAvailable
-                  ? "No sample cards are stored."
-                  : "Examples only. Off after refresh or locking. Nothing is deleted."}
-            </p>
-          </div>
-          <Switch
-            id="show-sample-cards"
-            aria-describedby="sample-visibility-description"
-            checked={samplesVisible && realItems.length === 0}
-            disabled={!data.sampleDataAvailable || realItems.length > 0}
-            onCheckedChange={(checked) => {
-              setShowSamples(checked);
-              setSamplesVisible(checked);
-              // Drop the old snapshot before refetching, so hidden sample totals
-              // cannot survive in another screen's shared query cache.
-              void queryClient.resetQueries({ queryKey: ["state"] });
-            }}
-            data-testid="switch-show-sample-cards"
-          />
-        </div>
-        {hasDemo && (
-          <div className="rounded-xl bg-white p-3.5 shadow-[0_1px_2px_rgba(20,33,43,0.04)]">
-            <div className="text-[15px] font-semibold">Demo cards</div>
-            <div className="mt-0.5 text-xs text-[#68757F]">
-              Three sample cards. Sample controls never remove real bank records.
-            </div>
-          </div>
-        )}
+      <div className="mt-5 space-y-2">
         <div className="flex gap-2">
           {config.data?.demoEnabled && (
             <Button

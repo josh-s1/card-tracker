@@ -1,7 +1,19 @@
 import type { Account, Transaction, SafeItem } from "@shared/schema";
+import type { rewardEstimate } from "@shared/rewards";
 
 export function cardName(account: Pick<Account, "name" | "nickname">): string {
   return account.nickname || account.name;
+}
+
+export function bankSyncLabel(item?: SafeItem): string {
+  if (item?.isDemo) return "Sample card · No bank sync";
+  if (item?.disconnectPending) return "Bank disconnected · Cleanup pending";
+  const last = item?.lastSyncedAt
+    ? `Last synced ${new Date(item.lastSyncedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
+    : "No complete sync yet";
+  if (item?.syncIssue === "reconnect") return `Reconnect needed · ${last}`;
+  if (item?.syncIssue === "failed") return `Last sync failed · ${last}`;
+  return last;
 }
 
 /* ---------- Money & dates ---------- */
@@ -11,6 +23,16 @@ export function money(cents: number, currency = "USD"): string {
     style: "currency",
     currency,
   });
+}
+
+export function estimateLabel(row: NonNullable<ReturnType<typeof rewardEstimate>>, currency: string) {
+  const cash = row.unit.toLowerCase() === "cash back";
+  const fmt = (x: number) => cash
+    ? money(Math.round(x), currency)
+    : x.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const lower = fmt(row.value);
+  const upper = fmt(row.upper);
+  return `${lower}${upper === lower ? "" : ` to ${upper}`} ${cash ? "cash back" : row.unit}`;
 }
 
 export function money0(cents: number, currency = "USD"): string {

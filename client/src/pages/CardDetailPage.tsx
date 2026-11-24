@@ -1,25 +1,28 @@
 import { useContext, useState } from "react";
 import { Link, useParams } from "wouter";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PinContext } from "@/App";
-import { api, getPin } from "@/lib/api";
+import { api } from "@/lib/api";
+import { useDashboardState, useSampleMode } from "@/lib/dashboard-state";
 import {
   money,
   money0,
   fmtDate,
   dueText,
   cardName,
-  type AppState,
+  bankSyncLabel,
 } from "@/lib/format";
 import { SpendingPanel } from "./SpendingPanel";
 import { TxnList } from "./TxnList";
+import { RewardProductEditor } from "./RewardsPage";
 
 export default function CardDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { pin } = useContext(PinContext);
+  const sample = useSampleMode();
   const [tab, setTab] = useState<"txns" | "spend">("txns");
   const [renaming, setRenaming] = useState(false);
   const [nickname, setNickname] = useState("");
@@ -27,18 +30,12 @@ export default function CardDetailPage() {
   const rename = useMutation({
     mutationFn: ({ accountId, nickname }: { accountId: string; nickname: string }) =>
       api.renameCard(accountId, nickname),
-    onSuccess: (state: AppState) => {
-      // A response arriving after Lock must not refill the cleared data cache.
-      if (getPin() !== pin) return;
-      queryClient.setQueryData(["state", pin], state);
-      void queryClient.invalidateQueries({ queryKey: ["state"] });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["state", pin, false] });
       setRenaming(false);
     },
   });
-  const { data, isLoading, error } = useQuery<AppState>({
-    queryKey: ["state", pin],
-    queryFn: api.state,
-  });
+  const { data, isLoading, error } = useDashboardState(pin);
 
   if (isLoading) return <Skeleton className="h-96 w-full rounded-2xl" />;
   if (error) return <p className="text-sm text-[#8A3B3B]">{(error as Error).message}</p>;
@@ -100,7 +97,8 @@ export default function CardDetailPage() {
         </div>
       </div>
 
-      <div className="mt-3 rounded-xl bg-white p-3.5">
+      <p className="mt-3 text-xs font-medium text-[#41525E]">{bankSyncLabel(data.items.find(i => i.id === card.itemId))}</p>
+      {!sample && <div className="mt-3 rounded-xl bg-white p-3.5">
         <p className="break-words text-xs text-[#68757F]">Bank name: {card.name}</p>
         {renaming ? (
           <form className="mt-3 space-y-3" onSubmit={event => {
@@ -140,7 +138,8 @@ export default function CardDetailPage() {
             Rename card
           </Button>
         )}
-      </div>
+      </div>}
+      {!sample && card.type === "credit" && <RewardProductEditor card={card} pin={pin} />}
 
       <SectionTitle>Payment</SectionTitle>
       <div className="rounded-xl bg-white px-4 py-1 shadow-[0_1px_2px_rgba(20,33,43,0.04)]">

@@ -12,6 +12,8 @@ import CardDetailPage from "@/pages/CardDetailPage";
 import ActivityPage from "@/pages/ActivityPage";
 import SpendingPage from "@/pages/SpendingPage";
 import ConnectPage from "@/pages/ConnectPage";
+import RewardsPage from "@/pages/RewardsPage";
+import { useSampleMode } from "./lib/dashboard-state";
 import { api, setPin, getPin, LockedError } from "./lib/api";
 import { CreditCard, List, PieChart, Plug, Lock } from "lucide-react";
 import { Link } from "wouter";
@@ -59,6 +61,7 @@ function TabBar({ current }: { current: string }) {
 
 function Shell() {
   const [location] = useHashLocation();
+  const sample = useSampleMode();
   const current = location.startsWith("/card")
     ? "cards"
     : location.startsWith("/activity")
@@ -71,12 +74,14 @@ function Shell() {
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col bg-[#F2F4F6] shadow-[0_0_40px_rgba(20,33,43,0.08)] sm:my-0">
       <main className="flex-1 px-4 pb-24 pt-6">
-        <Switch>
+        {sample && <p role="status" className="mb-4 rounded-lg bg-[#DCE3E8] px-3 py-2 text-xs font-semibold text-[#41525E]">Sample mode · Real data hidden</p>}
+        <Switch key={String(sample)}>
           <Route path="/" component={CardsPage} />
           <Route path="/card/:id" component={CardDetailPage} />
           <Route path="/activity" component={ActivityPage} />
           <Route path="/spending" component={SpendingPage} />
           <Route path="/connect" component={ConnectPage} />
+          <Route path="/rewards" component={RewardsPage} />
           <Route component={NotFound} />
         </Switch>
       </main>
@@ -86,6 +91,7 @@ function Shell() {
 }
 
 function AppInner() {
+  const sample = useSampleMode();
   const [pin, setPinState] = useState<string>(getPin());
   const config = useQuery({
     queryKey: ["config"],
@@ -161,7 +167,7 @@ function AppInner() {
       ) : (
         <Shell />
       )}
-      <Toaster />
+      {!sample && !needsPin && <Toaster />}
     </PinContext.Provider>
   );
 }

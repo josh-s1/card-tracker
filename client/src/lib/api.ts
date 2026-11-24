@@ -3,11 +3,20 @@ const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 let currentPin = "";
 // Display preference only. Never persisted; refresh/locking hides samples again.
 let showSamples = false;
+const modeListeners = new Set<() => void>();
 export function getShowSamples() { return showSamples; }
-export function setShowSamples(show: boolean) { showSamples = show; }
+export function subscribeSampleMode(listener: () => void) {
+  modeListeners.add(listener);
+  return () => { modeListeners.delete(listener); };
+}
+export function setShowSamples(show: boolean) {
+  if (show === showSamples) return;
+  showSamples = show;
+  modeListeners.forEach(listener => listener());
+}
 export function setPin(pin: string) {
   currentPin = pin;
-  if (!pin) showSamples = false;
+  if (!pin) setShowSamples(false);
 }
 export function getPin() {
   return currentPin;
@@ -53,7 +62,11 @@ export async function apiJson<T = any>(path: string, init?: RequestInit): Promis
 
 export const api = {
   config: () => apiJson("/api/config"),
-  state: () => apiJson("/api/state"),
+  state: (sample = showSamples, signal?: AbortSignal) => apiJson("/api/state", {
+    signal, headers: { "x-show-samples": String(sample) },
+  }),
+  saveRewardRules: (accountId: string, selection: { rules: unknown } | { productId: string }) =>
+    apiJson("/api/accounts/reward-rules", { method: "POST", body: JSON.stringify({ accountId, ...selection }) }),
   renameCard: (accountId: string, nickname: string) =>
     apiJson("/api/accounts/nickname", {
       method: "POST",

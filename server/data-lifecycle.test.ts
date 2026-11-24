@@ -2,14 +2,18 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { eq, sql } from "drizzle-orm";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { db, ensureSchema } from "./storage";
-import { items, accounts, transactions, accountPreferences } from "../shared/schema";
+import { items, accounts, transactions, accountPreferences, rewardProfiles, syncIssues, transactionRewardContext } from "../shared/schema";
+import { findRewardProduct, purchaseEligible, rewardGroups, rewardEstimate, transactionEstimate } from "../shared/rewards";
 import { disconnectItem, DisconnectError } from "./data-lifecycle";
 import { seedDemoData, seedIfEmpty } from "./seed";
 import { registerRoutes, syncItem } from "./routes";
 import { api, apiJson, LockedError, setPin, getPin, getShowSamples, setShowSamples } from "../client/src/lib/api";
 import { encryptAccessToken, decryptAccessToken, validateProductionConfig } from "./token-vault";
 import { cardName } from "../client/src/lib/format";
+import { TxnList } from "../client/src/pages/TxnList";
 
 // Run only with an explicitly disposable local database, never hosted storage.
 assert.equal(process.env.TURSO_DATABASE_URL, "file:/scratch/dummy.db");
@@ -20,6 +24,9 @@ async function fixture() {
   process.env.TOKEN_ENCRYPTION_KEY = "dummy-test-encryption-key-not-for-production";
   await ensureSchema();
   await db.delete(accountPreferences);
+  await db.delete(rewardProfiles);
+  await db.delete(syncIssues);
+  await db.delete(transactionRewardContext);
   await db.delete(transactions);
   await db.delete(accounts);
   await db.delete(items);
@@ -597,39 +604,45 @@ test("stored production samples default hidden; repeated display toggles preserv
   }
 });
 
-test("sample opt-in cannot mix demo accounts or transactions with real banks", async () => {
+test("sample opt-in works with active banks and no stored samples, without leaking or writing real data", async () => {
   await fixture();
-  await seedDemoData();
   await routes();
+  await invoke("/api/accounts/nickname", { accountId: "account-bank-a", nickname: "Private test label" });
+  await invoke("/api/accounts/reward-rules", { accountId: "account-bank-a", productId: "amex-gold-us" });
   const before = await snapshot();
   const { payload } = await invoke("/api/state", undefined, "GET", { "x-show-samples": "true" });
   assert.equal(payload.sampleDataAvailable, true);
-  assert.equal(payload.items.length, 2);
-  assert.ok(payload.items.every((i: any) => !i.isDemo));
-  assert.ok(payload.accounts.every((a: any) => a.itemId !== "demo"));
-  assert.ok(payload.transactions.every((t: any) => t.itemId !== "demo"));
+  assert.equal(payload.items.length, 1);
+  assert.equal(payload.accounts.length, 3);
+  assert.ok(payload.items.every((i: any) => i.isDemo));
+  assert.ok(payload.accounts.every((a: any) => a.itemId === "demo" && a.rewardRules));
+  assert.ok(payload.transactions.every((t: any) => t.itemId === "demo"));
+  assert.doesNotMatch(JSON.stringify(payload), /bank-a|bank-b|Private test label|amex-gold-us|accessToken/);
+  const real = (await invoke("/api/state", undefined, "GET")).payload;
+  assert.deepEqual(real.accounts.map((a: any) => a.itemId).sort(), ["bank-a", "bank-b"]);
   assert.deepEqual(await snapshot(), before);
 });
 
-test("sync and disconnect-all responses honor sample visibility without recreating or deleting samples", async () => {
+test("sample requests cannot link, sync, rename, edit rewards or disconnect real accounts", async () => {
   await fixture();
-  await db.delete(transactions);
-  await db.delete(accounts);
-  await db.delete(items);
-  await seedDemoData();
   await routes();
   const before = await snapshot();
   for (const [path, body] of [
+    ["/api/plaid/link-token", undefined],
+    ["/api/plaid/exchange", { public_token: "dummy-link" }],
     ["/api/plaid/sync", undefined],
+    ["/api/plaid/remove", { itemId: "bank-a" }],
     ["/api/demo/clear", { confirm: "disconnect-all" }],
+    ["/api/accounts/nickname", { accountId: "account-bank-a", nickname: "No" }],
+    ["/api/accounts/reward-rules", { accountId: "account-bank-a", productId: "amex-gold-us" }],
   ] as const) {
-    for (const show of [false, true]) {
-      const { payload, status } = await invoke(path, body, "POST", show ? { "x-show-samples": "true" } : {});
-      assert.equal(status, 200);
-      assert.equal(payload.accounts.length, show ? 3 : 0);
-      assert.deepEqual(await snapshot(), before);
-    }
+    const { payload, status } = await invoke(path, body, "POST", { "x-show-samples": "true" });
+    assert.equal(status, 403);
+    assert.match(payload.message, /read-only/);
+    assert.doesNotMatch(JSON.stringify(payload), /bank-a|bank-b/);
   }
+  assert.deepEqual(await snapshot(), before);
+  assert.deepEqual(await db.select().from(rewardProfiles), []);
 });
 
 test("sample visibility is sent explicitly and resets when locked or authentication is rejected", async () => {
@@ -799,4 +812,109 @@ test("failed nickname persistence keeps the old nickname and every financial rec
   } finally {
     await db.run(sql`DROP TRIGGER fail_dummy_nickname_save`);
   }
+});
+
+test("reward product selection, switching, custom rates and clearing scope to a single connected card", async () => {
+  await fixture();
+  await routes();
+  const path = "/api/accounts/reward-rules";
+  const accountId = "account-bank-a";
+  const before = await snapshot();
+  const current = async () => (await invoke("/api/state", undefined, "GET")).payload.accounts.find((a: any) => a.id === accountId);
+  assert.equal((await invoke(path, { accountId, productId: "amex-gold-us" })).status, 200);
+  assert.equal((await current()).rewardRules.potential.Dining, 4);
+  assert.equal((await invoke(path, { accountId, productId: "amex-cobalt-ca" })).status, 400);
+  assert.equal((await invoke(path, { accountId, productId: "missing" })).status, 400);
+  assert.equal((await invoke(path, { accountId, productId: "amex-gold-us", rules: null })).status, 400);
+  assert.equal((await current()).rewardProductId, "amex-gold-us");
+  assert.equal((await invoke(path, { accountId, productId: "chase-sapphire-preferred-us" })).status, 200);
+  assert.equal((await current()).rewardRules.bonuses.Dining, 3);
+  assert.equal((await invoke(path, { accountId, rules: { unit: "Miles", base: -5, bonuses: {} } })).status, 400);
+  assert.equal((await invoke(path, { accountId, rules: { unit: "Miles", base: 2, bonuses: { Travel: 3 } } })).status, 200);
+  assert.equal((await current()).rewardProductId, null);
+  assert.equal((await current()).rewardRules.bonuses.Travel, 3);
+  assert.equal((await invoke(path, { accountId: "missing", rules: null })).status, 404);
+  assert.equal((await invoke(path, { accountId, rules: null })).status, 200);
+  assert.equal((await current()).rewardRules, undefined);
+  assert.deepEqual(await snapshot(), before);
+});
+
+test("rewards compare same currency by program, preserve uncertain ranges and skip non-purchases", async () => {
+  await fixture();
+  const s = await snapshot();
+  const source = s.accounts[0];
+  const products = ["amex-gold-us", "chase-freedom-unlimited-us", "chase-sapphire-preferred-us", "amex-cobalt-ca"];
+  const cards = products.map(id => {
+    const product = findRewardProduct(id)!;
+    return { ...source, id, currency: product.currency, rewardRules: product.rules };
+  });
+  const groups = rewardGroups(cards, 10000, "Dining", "USD");
+  assert.equal(groups.length, 3);
+  assert.deepEqual(groups.map(g => [g[0].value, g[0].upper]), [[100, 400], [300, 300], [300, 300]]);
+  assert.equal(rewardEstimate(cards[3], 10000, "Dining", "USD"), null);
+  const txn = { ...s.transactions[0], category: "Dining" };
+  assert.ok(purchaseEligible(txn));
+  for (const adjustment of [{ amountCents: -100 }, { pending: true }, { category: "Fees" }, { category: "Payment" }, { category: "Other" }]) {
+    assert.equal(purchaseEligible({ ...txn, ...adjustment }), false);
+  }
+});
+
+test("sync status is scoped to a bank, survives a failed sync, and is cleaned up on disconnect", async () => {
+  await fixture();
+  await routes();
+  await db.update(items).set({ lastSyncedAt: "2026-10-01T00:00:00Z" }).where(eq(items.id, "bank-a"));
+  await invoke("/api/accounts/reward-rules", { accountId: "account-bank-a", productId: "amex-gold-us" });
+  await invoke("/api/accounts/reward-rules", { accountId: "account-bank-b", productId: "amex-gold-us" });
+  const last = await snapshot();
+  await providerCheck(async () => {
+    await assert.rejects(syncItem("bank-a"));
+    assert.deepEqual(await snapshot(), last);
+  }, () => mockResponse(400, JSON.stringify({ error_code: "ITEM_LOGIN_REQUIRED" })));
+  const state = (await invoke("/api/state", undefined, "GET")).payload;
+  assert.equal(state.items.find((i: any) => i.id === "bank-a").syncIssue, "reconnect");
+  assert.equal(state.items.find((i: any) => i.id === "bank-a").lastSyncedAt, "2026-10-01T00:00:00Z");
+  assert.equal(state.items.find((i: any) => i.id === "bank-b").syncIssue, undefined);
+  await disconnectItem(db, await bank(), async () => {});
+  assert.deepEqual((await db.select().from(rewardProfiles)).map(r => r.accountId), ["account-bank-b"]);
+  assert.deepEqual(await db.select().from(syncIssues), []);
+});
+
+test("a complete sync clears prior failure, records grocery detail and safely handles legacy categories", async () => {
+  await fixture();
+  await routes();
+  await db.insert(syncIssues).values({ itemId: "bank-a", status: "failed" });
+  await invoke("/api/accounts/reward-rules", { accountId: "account-bank-a", productId: "chase-sapphire-preferred-us" });
+  await providerCheck(() => syncItem("bank-a"), path => path === "/transactions/sync"
+    ? mockResponse(200, JSON.stringify(delta({ added: [
+        transaction("groceries", 10, { iso_currency_code: "USD", personal_finance_category: { primary: "FOOD_AND_DRINK", detailed: "FOOD_AND_DRINK_GROCERIES" } }),
+      ] })))
+    : standardProvider(path));
+  const { payload } = await invoke("/api/state", undefined, "GET");
+  const card = payload.accounts.find((a: any) => a.id === "account-bank-a");
+  const item = payload.items.find((i: any) => i.id === "bank-a");
+  const txn = payload.transactions.find((t: any) => t.id === "groceries");
+  assert.equal(item.syncIssue, undefined);
+  assert.ok(item.lastSyncedAt);
+  assert.equal(txn.category, "Groceries");
+  assert.deepEqual(txn.rewardContext, { currency: "USD", detailedCategory: "FOOD_AND_DRINK_GROCERIES" });
+  assert.equal(card.rewardProductId, "chase-sapphire-preferred-us");
+  assert.equal(transactionEstimate(card, { ...txn, rewardContext: { ...txn.rewardContext, currency: "CAD" } }, "USD"), null);
+  const legacy = transactionEstimate(card, { ...txn, category: "Dining", rewardContext: undefined }, "USD");
+  assert.equal(legacy?.value, 10);
+  assert.equal(legacy?.upper, 30);
+});
+
+test("activity renders sample reward estimates and alternative cards but not for payments", async () => {
+  await fixture();
+  await routes();
+  const { payload } = await invoke("/api/state", undefined, "GET", { "x-show-samples": "true" });
+  const accountById = Object.fromEntries(payload.accounts.map((a: any) => [a.id, a]));
+  const render = (txns: any[]) => renderToStaticMarkup(createElement(TxnList, {
+    txns, accountById, rewardCards: payload.accounts, showCard: true,
+  }));
+  const grocery = payload.transactions.find((t: any) => t.category === "Groceries");
+  const markup = render([grocery]);
+  assert.match(markup, /Estimated on this card/);
+  assert.match(markup, /With Summit Travel/);
+  assert.doesNotMatch(render([payload.transactions.find((t: any) => t.category === "Payment")]), /Estimated on this card/);
 });

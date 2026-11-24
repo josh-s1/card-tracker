@@ -2,8 +2,9 @@ import type { Express, Request, Response } from "express";
 import type { Server } from "node:http";
 import { and, eq } from "drizzle-orm";
 import { db } from "./storage";
-import { items, accounts, transactions, accountPreferences } from "@shared/schema";
-import { seedDemoData, seedIfEmpty } from "./seed";
+import { items, accounts, transactions, accountPreferences, rewardProfiles, syncIssues, transactionRewardContext, type Item } from "@shared/schema";
+import { demoRewards, findRewardProduct, readRewardRules } from "@shared/rewards";
+import { buildSamples, seedDemoData, seedIfEmpty } from "./seed";
 import { createPinGuard } from "./auth";
 import { disconnectItem, DisconnectError } from "./data-lifecycle";
 import { encryptAccessToken, decryptAccessToken } from "./token-vault";
@@ -43,6 +44,25 @@ export async function syncItem(itemId: string): Promise<void> {
   const itemRows = await db.select().from(items).where(eq(items.id, itemId));
   const item = itemRows[0];
   if (!item || item.isDemo || item.accessToken.startsWith("revoked:")) return;
+  try {
+    await syncSnapshot(item);
+  } catch (error) {
+    const status = error instanceof PlaidError && error.plaidCode === "ITEM_LOGIN_REQUIRED" ? "reconnect" : "failed";
+    try {
+      await db.transaction(async tx => {
+        const [current] = await tx.select().from(items).where(eq(items.id, item.id));
+        if (!current || current.accessToken !== item.accessToken ||
+            current.cursor !== item.cursor || current.lastSyncedAt !== item.lastSyncedAt) return;
+        await tx.insert(syncIssues).values({ itemId, status }).onConflictDoUpdate({
+          target: syncIssues.itemId, set: { status },
+        });
+      });
+    } catch { /* Keep the original failure if writing status also fails. */ }
+    throw error;
+  }
+}
+
+async function syncSnapshot(item: Item): Promise<void> {
   const token = decryptAccessToken(item.accessToken);
 
   // Fetch a complete snapshot before changing any visible financial data.
@@ -124,7 +144,9 @@ export async function syncItem(itemId: string): Promise<void> {
         if (existing && existing.itemId !== item.id) throw new Error("Transaction scope mismatch");
         if (!t.pending && typeof t.pending_transaction_id === "string") {
           await tx.delete(transactions).where(and(eq(transactions.id, t.pending_transaction_id), eq(transactions.itemId, item.id)));
+          await tx.delete(transactionRewardContext).where(and(eq(transactionRewardContext.transactionId, t.pending_transaction_id), eq(transactionRewardContext.itemId, item.id)));
         }
+        const detailedCategory = typeof t.personal_finance_category?.detailed === "string" ? t.personal_finance_category.detailed.slice(0, 128) : null;
         const row = {
         id: t.transaction_id, accountId: t.account_id,
         itemId: item.id,
@@ -134,7 +156,7 @@ export async function syncItem(itemId: string): Promise<void> {
         amountCents: cents(t.amount) ?? 0,
         category: mapCategory(
           t.personal_finance_category?.primary,
-          t.transaction_type,
+          t.transaction_type, detailedCategory,
         ),
         pending: Boolean(t.pending),
       };
@@ -142,35 +164,61 @@ export async function syncItem(itemId: string): Promise<void> {
         .insert(transactions)
         .values(row)
         .onConflictDoUpdate({ target: transactions.id, set: row });
+        const context = {
+          transactionId: row.id, itemId: item.id, detailedCategory,
+          currency: typeof t.iso_currency_code === "string" && /^[A-Z]{3}$/.test(t.iso_currency_code) ? t.iso_currency_code : null,
+        };
+        await tx.insert(transactionRewardContext).values(context).onConflictDoUpdate({
+          target: transactionRewardContext.transactionId, set: context,
+        });
       }
       for (const removed of res.removed) {
         if (typeof removed.transaction_id !== "string") throw new Error("Invalid removed transaction");
         await tx.delete(transactions).where(and(eq(transactions.id, removed.transaction_id), eq(transactions.itemId, item.id)));
+        await tx.delete(transactionRewardContext).where(and(eq(transactionRewardContext.transactionId, removed.transaction_id), eq(transactionRewardContext.itemId, item.id)));
       }
     }
     const nextTime = Math.max(Date.now(), (Date.parse(item.lastSyncedAt ?? "") || 0) + 1);
     await tx.update(items)
     .set({ cursor, lastSyncedAt: new Date(nextTime).toISOString() })
     .where(eq(items.id, item.id));
+    await tx.delete(syncIssues).where(eq(syncIssues.itemId, item.id));
   });
 }
 
 async function getState(showSamples = false) {
-  const allItems = await db.select().from(items);
+  if (showSamples) {
+    const sample = buildSamples();
+    return { ...sample, sampleDataAvailable: true,
+      accounts: sample.accounts.map(a => ({ ...a, rewardRules: demoRewards[a.id] })) };
+  }
+  const visibleItems = await db.select().from(items).where(eq(items.isDemo, false));
   const allAccounts = await db.select().from(accounts);
   const allTxns = await db.select().from(transactions);
+  const txnContexts = new Map((await db.select().from(transactionRewardContext)).map(c => [c.transactionId, c]));
   const preferences = await db.select().from(accountPreferences);
+  const profiles = new Map((await db.select().from(rewardProfiles)).map(p => [p.accountId, p]));
+  const issues = new Map((await db.select().from(syncIssues)).map(p => [p.itemId, p.status]));
   const nicknames = new Map(preferences.map(p => [p.accountId, p.nickname]));
-  const hasReal = allItems.some(i => !i.isDemo);
-  const visibleItems = allItems.filter(i => !i.isDemo || (showSamples && !hasReal));
   const visibleIds = new Set(visibleItems.map(i => i.id));
   return {
-    sampleDataAvailable: allItems.some(i => i.isDemo),
+    sampleDataAvailable: true,
     items: visibleItems
-      .map(({ accessToken, cursor, ...rest }) => ({ ...rest, disconnectPending: accessToken.startsWith("revoked:") })),
+      .map(({ accessToken, cursor, ...rest }) => ({ ...rest,
+        disconnectPending: accessToken.startsWith("revoked:"), syncIssue: issues.get(rest.id) })),
     accounts: allAccounts.filter(a => visibleIds.has(a.itemId))
-      .map(a => ({ ...a, nickname: nicknames.get(a.id) ?? null })),
-    transactions: allTxns.filter(t => visibleIds.has(t.itemId)),
+      .map(a => {
+        const profile = profiles.get(a.id);
+        const product = findRewardProduct(profile?.productId);
+        return { ...a, nickname: nicknames.get(a.id) ?? null, rewardProductId: profile?.productId,
+          rewardRules: profile?.productId ? (product?.currency === a.currency ? product.rules : undefined) : profile?.rules };
+      }),
+    transactions: allTxns.filter(t => visibleIds.has(t.itemId)).map(t => {
+      const context = txnContexts.get(t.id);
+      return context?.itemId === t.itemId ? { ...t, rewardContext: {
+        currency: context.currency, detailedCategory: context.detailedCategory,
+      } } : t;
+    }),
   };
 }
 
@@ -183,9 +231,12 @@ export async function registerRoutes(
   app.use("/api", createPinGuard(process.env.APP_PIN));
 
   const wrap =
-    (fn: (req: Request, res: Response) => unknown) =>
-    (req: Request, res: Response) =>
-      Promise.resolve(fn(req, res)).catch((err: any) => {
+    (fn: (req: Request, res: Response) => unknown, allowSample = false) =>
+    (req: Request, res: Response) => {
+      if (!allowSample && req.get("x-show-samples") === "true") {
+        return res.status(403).json({ message: "Sample mode is read-only. Switch it off to manage real data." });
+      }
+      return Promise.resolve(fn(req, res)).catch((err: any) => {
         if (err instanceof DisconnectError) {
           return res.status(502).json({ message: err.message });
         }
@@ -195,6 +246,7 @@ export async function registerRoutes(
         console.error("API request failed");
         res.status(500).json({ message: "Server error" });
       });
+    };
 
   app.get("/api/config", (_req, res) => {
     res.json({
@@ -202,7 +254,7 @@ export async function registerRoutes(
       plaidEnv: plaidEnv(),
       pinRequired: Boolean(process.env.APP_PIN),
       demoEnabled: process.env.NODE_ENV !== "production",
-      securityRelease: "2026-11-17-card-nicknames-3",
+      securityRelease: "2026-11-24-rewards-sample-sync",
     });
   });
 
@@ -212,6 +264,32 @@ export async function registerRoutes(
 
   app.get("/api/state", wrap(async (req, res) => {
     res.json(await getState(req.get("x-show-samples") === "true"));
+  }, true));
+
+  app.post("/api/accounts/reward-rules", wrap(async (req, res) => {
+    const { accountId, rules, productId } = req.body ?? {};
+    const product = findRewardProduct(productId);
+    const parsed = product?.rules ?? readRewardRules(rules);
+    const clearing = rules === null && productId === undefined;
+    if (typeof accountId !== "string" || !accountId.trim() || accountId.length > 512 ||
+        (!clearing && !parsed) || (productId !== undefined && (!product || rules !== undefined))) {
+      return res.status(400).json({ message: "Invalid card product or reward rates." });
+    }
+    const found = await db.transaction(async tx => {
+      const [account] = await tx.select().from(accounts).where(eq(accounts.id, accountId));
+      if (!account || account.type !== "credit") return "missing";
+      const [item] = await tx.select().from(items).where(eq(items.id, account.itemId));
+      if (!item || item.isDemo || item.accessToken.startsWith("revoked:")) return "missing";
+      if (product && product.currency !== account.currency) return "currency";
+      if (!parsed) await tx.delete(rewardProfiles).where(eq(rewardProfiles.accountId, accountId));
+      else await tx.insert(rewardProfiles).values({ accountId, rules: parsed, productId: product?.id ?? null }).onConflictDoUpdate({
+        target: rewardProfiles.accountId, set: { rules: parsed, productId: product?.id ?? null },
+      });
+      return "saved";
+    });
+    if (found === "missing") return res.status(404).json({ message: "Connected credit card not found." });
+    if (found === "currency") return res.status(400).json({ message: "This product does not match the card’s billing currency." });
+    res.json({ ok: true });
   }));
 
   app.post("/api/accounts/nickname", wrap(async (req, res) => {

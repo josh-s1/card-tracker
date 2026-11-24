@@ -82,11 +82,19 @@ account_preferences table if needed; existing tables/financial rows are unchange
 Removing a bank also removes its stored nicknames. No new environment variable
 or manual SQL is required.
 
-Stored sample cards are hidden by default, without deleting their database rows.
-Use Connect → Show sample cards to display them for the current page session.
-Refresh or locking switches them off again. When any real bank is connected,
-samples remain hidden regardless of this setting, so payment/spending totals
-never mix sample and real data. No new environment variable is needed.
+Use Connect → Show sample cards to open a read-only fictional dataset across the
+app, including when real banks are connected. Sample mode does not query or
+change real records; refresh or lock returns to real mode. No new environment
+variables are needed.
+
+Cards show the last complete bank sync and whether the latest attempt failed or
+needs a reconnect. On card detail, open Reward rates to select a listed issuer
+product, switch products, or enter custom rates. Activity estimates rewards on
+posted purchases with usable categories and compares configured cards in the
+same billing currency. The picker links to issuer terms and the catalog check
+date. Catalog rates update with releases; rates do not automatically scrape
+issuer sites. This feature does not read issuer-posted rewards or reconstruct
+historical caps and offers. Startup adds separate reward and sync metadata tables.
 
 Only after approval and the checks above, open the app, unlock it, and use
 Connect a bank. Enter bank credentials only in the bank/Plaid authentication

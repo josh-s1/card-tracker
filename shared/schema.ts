@@ -1,6 +1,7 @@
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import type * as z from "zod/mini";
+import type { RewardRules } from "./rewards";
 
 /**
  * A Plaid "Item" = one bank login (may contain several cards).
@@ -64,6 +65,24 @@ export const accountPreferences = sqliteTable("account_preferences", {
   nickname: text("nickname").notNull(),
 });
 
+export const rewardProfiles = sqliteTable("reward_profiles", {
+  accountId: text("account_id").primaryKey(),
+  productId: text("product_id"),
+  rules: text("rules", { mode: "json" }).$type<RewardRules>().notNull(),
+});
+
+export const syncIssues = sqliteTable("sync_issues", {
+  itemId: text("item_id").primaryKey(),
+  status: text("status", { enum: ["failed", "reconnect"] }).notNull(),
+});
+
+export const transactionRewardContext = sqliteTable("transaction_reward_context", {
+  transactionId: text("transaction_id").primaryKey(),
+  itemId: text("item_id").notNull(),
+  currency: text("currency"),
+  detailedCategory: text("detailed_category"),
+});
+
 export const insertItemSchema = createInsertSchema(items);
 export const insertAccountSchema = createInsertSchema(accounts);
 export const insertTransactionSchema = createInsertSchema(transactions);
@@ -71,9 +90,11 @@ export const insertTransactionSchema = createInsertSchema(transactions);
 export type InsertItem = z.infer<typeof insertItemSchema>;
 export type Item = typeof items.$inferSelect;
 export type InsertAccount = z.infer<typeof insertAccountSchema>;
-export type Account = typeof accounts.$inferSelect & { nickname?: string | null };
+export type Account = typeof accounts.$inferSelect & { nickname?: string | null; rewardRules?: RewardRules; rewardProductId?: string | null };
 export type InsertTransaction = z.infer<typeof insertTransactionSchema>;
-export type Transaction = typeof transactions.$inferSelect;
+export type Transaction = typeof transactions.$inferSelect & {
+  rewardContext?: Pick<typeof transactionRewardContext.$inferSelect, "currency" | "detailedCategory">;
+};
 
 /** Shared client-facing types (access tokens stripped). */
-export type SafeItem = Omit<Item, "accessToken" | "cursor"> & { disconnectPending?: boolean };
+export type SafeItem = Omit<Item, "accessToken" | "cursor"> & { disconnectPending?: boolean; syncIssue?: "failed" | "reconnect" };

@@ -1,18 +1,15 @@
 import { useContext, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Search } from "lucide-react";
 import { PinContext } from "@/App";
-import { api } from "@/lib/api";
-import { cardName, type AppState } from "@/lib/format";
+import { useDashboardState } from "@/lib/dashboard-state";
+import { cardName } from "@/lib/format";
 import { TxnList } from "./TxnList";
 
 export default function ActivityPage() {
   const { pin } = useContext(PinContext);
-  const { data, isLoading, error } = useQuery<AppState>({
-    queryKey: ["state", pin],
-    queryFn: api.state,
-  });
+  const { data, isLoading, error } = useDashboardState(pin);
   const [card, setCard] = useState<string>("all");
   const [q, setQ] = useState("");
 
@@ -71,7 +68,12 @@ export default function ActivityPage() {
         ))}
       </div>
 
-      <TxnList txns={txns} showCard accountById={accountById} />
+      <p className="mb-2 text-xs text-[#68757F]">
+        Estimates use the currently selected rates, not issuer-posted points. Older purchases assume the card’s billing currency and may only have broad categories.{" "}
+        <Link href="/rewards" className="font-semibold text-[#1F3A5F]">Compare cards</Link>
+      </p>
+      <TxnList txns={txns} showCard accountById={accountById}
+        rewardCards={cards.filter(c => !data.items.find(i => i.id === c.itemId)?.disconnectPending)} />
     </div>
   );
 }

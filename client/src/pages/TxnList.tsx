@@ -1,14 +1,17 @@
 import type { Transaction, Account } from "@shared/schema";
-import { money, catColor, displayMerchant, dayLabel, cardName } from "@/lib/format";
+import { money, catColor, displayMerchant, dayLabel, cardName, estimateLabel } from "@/lib/format";
+import { purchaseEligible, transactionEstimate } from "@shared/rewards";
 
 export function TxnList({
   txns,
   showCard,
   accountById,
+  rewardCards,
 }: {
   txns: Transaction[];
   showCard?: boolean;
   accountById?: Record<string, Account>;
+  rewardCards?: Account[];
 }) {
   if (!txns.length) {
     return (
@@ -32,14 +35,22 @@ export function TxnList({
             {dayLabel(g.d)}
           </div>
           <div className="rounded-xl bg-white px-4 py-0.5 shadow-[0_1px_2px_rgba(20,33,43,0.04)]">
-            {g.items.map((t, i) => {
+            {g.items.map((t) => {
               const acct = accountById?.[t.accountId];
+              const showRewards = rewardCards && acct?.type === "credit" && purchaseEligible(t);
+              const currencyMatches = !t.rewardContext || t.rewardContext.currency === acct?.currency;
+              const earned = showRewards ? transactionEstimate(acct, t, acct.currency) : null;
+              const alternatives = showRewards
+                ? rewardCards.filter(c => c.id !== acct.id)
+                    .map(c => transactionEstimate(c, t, acct.currency)).filter(row => row !== null)
+                : [];
               return (
                 <div
                   key={t.id}
-                  className="flex items-center gap-3 border-b border-[#EAEDEF] py-2.5 last:border-0"
+                  className="border-b border-[#EAEDEF] py-2.5 last:border-0"
                   data-testid={`txn-${t.id}`}
                 >
+                  <div className="flex items-center gap-3">
                   <span
                     className="h-2.5 w-2.5 flex-none rounded-full"
                     style={{ background: catColor(t.category) }}
@@ -60,8 +71,17 @@ export function TxnList({
                     }`}
                   >
                     {t.amountCents < 0 ? "+" : ""}
-                    {money(Math.abs(t.amountCents), acct?.currency)}
+                    {money(Math.abs(t.amountCents), t.rewardContext?.currency ?? acct?.currency)}
                   </div>
+                  </div>
+                  {showRewards && (
+                    <div className="ml-5 mt-2 space-y-1 break-words text-xs text-[#41525E]">
+                      <p><span className="font-semibold">Estimated on this card:</span> {earned ? estimateLabel(earned, acct.currency) : currencyMatches ? "Set the card product to calculate" : "Currency does not match or is unavailable"}</p>
+                      {currencyMatches && (alternatives.length
+                        ? alternatives.map(row => <p key={row.card.id}>With {cardName(row.card)}: {estimateLabel(row, acct.currency)} est.</p>)
+                        : <p>No other configured card in {acct.currency}.</p>)}
+                    </div>
+                  )}
                 </div>
               );
             })}

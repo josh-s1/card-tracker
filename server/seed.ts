@@ -128,31 +128,18 @@ const DEMO_CARDS: DemoCard[] = [
   },
 ];
 
-export async function seedDemoData() {
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("Sample mutations are disabled in production.");
-  }
-
-  await db.transaction(async (tx) => {
-    // Never reset real connections, including their stored revocation tokens.
-    const demoItems = await tx.select().from(items).where(eq(items.isDemo, true));
-    for (const item of demoItems) {
-      await tx.delete(transactions).where(eq(transactions.itemId, item.id));
-      await tx.delete(accounts).where(eq(accounts.itemId, item.id));
-      await tx.delete(items).where(eq(items.id, item.id));
-    }
-
-    await tx.insert(items).values({
+export function buildSamples() {
+    const item = {
       id: "demo",
       institutionId: "demo",
       institutionName: "Demo Bank (sample data)",
-      accessToken: "",
       isDemo: true,
+      lastSyncedAt: null,
       createdAt: new Date().toISOString(),
-    });
-
-    for (const card of DEMO_CARDS) {
-      await tx.insert(accounts).values({
+    };
+    return {
+      items: [item],
+      accounts: DEMO_CARDS.map(card => ({
         id: card.id,
         itemId: "demo",
         name: card.name,
@@ -172,10 +159,8 @@ export async function seedDemoData() {
         statementCloseDate: iso(card.closesOff),
         lastPaymentCents: Math.round(card.lastPayment.amt * 100),
         lastPaymentDate: iso(card.lastPayment.off),
-      });
-
-      for (const t of card.txns) {
-        await tx.insert(transactions).values({
+      })),
+      transactions: DEMO_CARDS.flatMap(card => card.txns.map(t => ({
           id: `${card.id}-${t.off}-${t.m.replace(/\W+/g, "")}`,
           accountId: card.id,
           itemId: "demo",
@@ -185,9 +170,27 @@ export async function seedDemoData() {
           amountCents: Math.round(t.a * 100),
           category: t.c,
           pending: Boolean(t.p),
-        });
-      }
+      }))),
+    };
+}
+
+export async function seedDemoData() {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Sample mutations are disabled in production.");
+  }
+
+  await db.transaction(async (tx) => {
+    // Never reset real connections, including their stored revocation tokens.
+    const demoItems = await tx.select().from(items).where(eq(items.isDemo, true));
+    for (const item of demoItems) {
+      await tx.delete(transactions).where(eq(transactions.itemId, item.id));
+      await tx.delete(accounts).where(eq(accounts.itemId, item.id));
+      await tx.delete(items).where(eq(items.id, item.id));
     }
+    const sample = buildSamples();
+    await tx.insert(items).values(sample.items);
+    await tx.insert(accounts).values(sample.accounts);
+    await tx.insert(transactions).values(sample.transactions);
   });
 }
 

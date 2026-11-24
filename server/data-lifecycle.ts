@@ -1,6 +1,6 @@
 import type { db } from "./storage";
 import { and, eq, inArray } from "drizzle-orm";
-import { items, accounts, transactions, accountPreferences, type Item } from "@shared/schema";
+import { items, accounts, transactions, accountPreferences, rewardProfiles, syncIssues, transactionRewardContext, type Item } from "@shared/schema";
 import { decryptAccessToken } from "./token-vault";
 
 export class DisconnectError extends Error {
@@ -40,7 +40,10 @@ export async function disconnectItem(
       .where(eq(accounts.itemId, item.id))).map(a => a.id);
     if (accountIds.length) {
       await tx.delete(accountPreferences).where(inArray(accountPreferences.accountId, accountIds));
+      await tx.delete(rewardProfiles).where(inArray(rewardProfiles.accountId, accountIds));
     }
+    await tx.delete(syncIssues).where(eq(syncIssues.itemId, item.id));
+    await tx.delete(transactionRewardContext).where(eq(transactionRewardContext.itemId, item.id));
     await tx.delete(transactions).where(eq(transactions.itemId, item.id));
     await tx.delete(accounts).where(eq(accounts.itemId, item.id));
     await tx.delete(items).where(eq(items.id, item.id));

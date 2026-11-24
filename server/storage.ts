@@ -68,6 +68,21 @@ const DDL = [
     account_id TEXT PRIMARY KEY,
     nickname TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS reward_profiles (
+    account_id TEXT PRIMARY KEY,
+    product_id TEXT,
+    rules TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS sync_issues (
+    item_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS transaction_reward_context (
+    transaction_id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    currency TEXT,
+    detailed_category TEXT
+  )`,
 ];
 
 export async function ensureSchema(): Promise<void> {
