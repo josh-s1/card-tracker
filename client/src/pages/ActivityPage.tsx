@@ -80,7 +80,7 @@ export default function ActivityPage({ plannerOpen }: { plannerOpen?: boolean })
       </div>
 
       <p className="mb-2 text-xs text-[#68757F]">
-        Estimates use the currently selected rates, not issuer-posted points. Older purchases assume the card’s billing currency and may only have broad categories.
+        These are estimates using current rates, not points posted by the issuer. Bonus eligibility can depend on merchant coding, purchase details or caps that aren’t visible here.
       </p>
       <TxnList txns={txns} showCard accountById={accountById} rewardCards={rewardCards} />
     </div>

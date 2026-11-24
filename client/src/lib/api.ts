@@ -1,4 +1,4 @@
-import type { CardSearchResponse } from "@shared/rewards";
+import type { CardSearchResponse, IssuerRewardStatus } from "@shared/rewards";
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
@@ -71,6 +71,8 @@ export const api = {
     apiJson("/api/accounts/reward-rules", { method: "POST", body: JSON.stringify({ accountId, ...selection }) }),
   searchCardProducts: (name: string, market: "US" | "CA") =>
     apiJson<CardSearchResponse>("/api/card-products/search", { method: "POST", body: JSON.stringify({ name, market }) }),
+  issuerRewards: () => apiJson<IssuerRewardStatus[]>("/api/issuer-rewards"),
+  syncIssuerRewards: () => apiJson<IssuerRewardStatus[]>("/api/issuer-rewards/sync", { method: "POST" }),
   renameCard: (accountId: string, nickname: string) =>
     apiJson("/api/accounts/nickname", {
       method: "POST",

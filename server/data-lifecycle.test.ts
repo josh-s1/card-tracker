@@ -8,8 +8,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Router } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { db, ensureSchema } from "./storage";
-import { items, accounts, transactions, accountPreferences, rewardProfiles, syncIssues, transactionRewardContext } from "../shared/schema";
-import { betterTransactionAlternative, findRewardProduct, purchaseEligible, rewardGroups, rewardEstimate, transactionEstimate } from "../shared/rewards";
+import { items, accounts, transactions, accountPreferences, rewardProfiles, issuerRewardChecks, syncIssues, transactionRewardContext } from "../shared/schema";
+import { betterTransactionAlternative, findRewardProduct, purchaseEligible, rewardGroups, rewardEstimate, searchRewardCatalog, transactionEstimate } from "../shared/rewards";
+import { issuerRewardSources } from "./issuer-rewards";
 import { disconnectItem, DisconnectError } from "./data-lifecycle";
 import { seedDemoData, seedIfEmpty } from "./seed";
 import { registerRoutes, syncItem } from "./routes";
@@ -29,6 +30,7 @@ async function fixture() {
   await ensureSchema();
   await db.delete(accountPreferences);
   await db.delete(rewardProfiles);
+  await db.delete(issuerRewardChecks);
   await db.delete(syncIssues);
   await db.delete(transactionRewardContext);
   await db.delete(transactions);
@@ -845,6 +847,93 @@ test("reward product selection, switching, custom rates and clearing scope to a 
   assert.deepEqual(await snapshot(), before);
 });
 
+test("free catalog starts empty and finds issuer variants without fabricating rates", async () => {
+  await fixture();
+  await routes();
+  assert.deepEqual(searchRewardCatalog(" ", "USD"), []);
+  assert.deepEqual(searchRewardCatalog("Free Hilton Amex", "USD").map(p => p.id), ["amex-hilton-honors-us"]);
+  assert.equal(searchRewardCatalog("Chase United", "USD").length, 6);
+  assert.ok(searchRewardCatalog("American Express Business", "USD").some(p => p.id === "amex-delta-reserve-business-us"));
+  assert.deepEqual(searchRewardCatalog("Hilton Honors", "CAD"), []);
+  const accountId = "account-bank-a";
+  const { id } = searchRewardCatalog("Chase United Gateway", "USD")[0];
+  assert.equal((await invoke("/api/accounts/reward-rules", { accountId, productId: id })).status, 200);
+  const { payload } = await invoke("/api/state", undefined, "GET");
+  const card = payload.accounts.find((a: any) => a.id === accountId);
+  assert.equal(card.rewardProductId, id);
+  assert.equal(card.rewardRules, undefined);
+  assert.equal(rewardEstimate(card, 10000, "Travel", "USD"), null);
+});
+
+test("issuer refresh uses only public URLs, changes rewards metadata, and retains it on failed checks", async () => {
+  await fixture();
+  await routes();
+  const chaseId = "chase-sapphire-preferred-us";
+  const hiltonId = "amex-hilton-honors-us";
+  const path = "/api/issuer-rewards/sync";
+  await invoke("/api/accounts/reward-rules", { accountId: "account-bank-a", productId: chaseId });
+  await invoke("/api/accounts/reward-rules", { accountId: "account-bank-b", productId: hiltonId });
+  const before = await snapshot();
+  const chase = `<p>You&rsquo;ll earn 1 point for each $1 spent on all other purchases.</p>
+    <p>You'll earn 2 points for each $1 spent on purchases made in the travel category (excluding purchases made through Chase Travel that qualify for 6 points as described).</p>
+    <p>You'll earn <strong>6</strong> points for each $1 spent on purchases made using your card through Chase Travel.</p>
+    <p>You'll earn 3 points for each $1 spent on purchases in the following rewards categories: vacation homes at top brands; gas stations; electric vehicle charging; dining at restaurants including takeout and eligible delivery services; top streaming services; online grocery (excluding Target, Walmart and wholesale clubs).</p>`;
+  const hilton = `<p>Earn 4X Hilton Honors Bonus Points for all other eligible purchases on your Card.</p>
+    <p>Earn 7X Hilton Honors Bonus Points for each dollar of eligible purchases charged on your Card directly with a hotel or resort within the Hilton portfolio.</p>
+    ${["restaurants", "supermarkets", "gas stations"].map(category =>
+      `<p>Earn 5X Hilton Honors Bonus Points for each dollar of eligible purchases on your Card at U.S. ${category}.</p>`).join("")}`;
+  const mockPage = (html: string) => {
+    let read = false;
+    return {
+      ok: true, headers: { get: () => "text/html; charset=utf-8" },
+      body: { getReader: () => ({
+        read: async () => read ? { done: true } : (read = true, { done: false, value: new TextEncoder().encode(html) }),
+        cancel: async () => {},
+      }) },
+    } as unknown as Response;
+  };
+  const original = globalThis.fetch;
+  const now = Date.now;
+  const urls: string[] = [];
+  let broken = false;
+  Date.now = () => Date.parse("2027-01-01T00:00:00Z") + (broken ? 360_000 : 0);
+  try {
+    globalThis.fetch = async (url, init) => {
+      urls.push(String(url));
+      const source = issuerRewardSources.find(s => s.url === String(url));
+      assert.ok(source);
+      assert.equal(init?.method, "GET");
+      assert.equal(init?.redirect, "error");
+      assert.equal(init?.body, undefined);
+      assert.deepEqual(init?.headers, { Accept: "text/html" });
+      if (source.id === chaseId) return mockPage(broken ? chase + chase.replace(">6<", ">8<") : chase);
+      if (source.id === hiltonId) return broken ? mockResponse(503) : mockPage(hilton);
+      return mockPage("No matching listing");
+    };
+    assert.equal((await invoke(path, {}, "POST", { "x-show-samples": "true" })).status, 403);
+    assert.equal(urls.length, 0);
+    const good = await invoke(path, { url: "https://ignored.invalid", accountId: "account-bank-a" });
+    assert.equal(good.status, 200);
+    assert.deepEqual(urls, issuerRewardSources.map(s => s.url));
+    assert.equal(good.payload.find((row: any) => row.source.id === chaseId).check.status, "rates-refreshed");
+    assert.equal(good.payload.find((row: any) => row.source.id === hiltonId).check.status, "rates-refreshed");
+    assert.equal((await invoke(path, {})).status, 429);
+    broken = true;
+    const failed = await invoke(path, {});
+    assert.equal(failed.status, 200);
+    assert.equal(failed.payload.find((row: any) => row.source.id === chaseId).check.status, "needs-review");
+    assert.equal(failed.payload.find((row: any) => row.source.id === hiltonId).check.status, "unavailable");
+    const { payload } = await invoke("/api/state", undefined, "GET");
+    assert.equal(payload.accounts.find((a: any) => a.id === "account-bank-a").rewardRules.potential.Travel, 6);
+    assert.equal(payload.accounts.find((a: any) => a.id === "account-bank-b").rewardRules.base, 4);
+    assert.ok(payload.accounts.every((a: any) => a.rewardRatesCheckedAt));
+    assert.deepEqual(await snapshot(), before);
+  } finally {
+    globalThis.fetch = original;
+    Date.now = now;
+  }
+});
+
 test("rewards compare same currency by program, preserve uncertain ranges and skip non-purchases", async () => {
   await fixture();
   const s = await snapshot();
@@ -921,6 +1010,12 @@ test("activity shows a strictly better sample alternative, hides worse cards, an
   const grocery = payload.transactions.find((t: any) => t.category === "Groceries");
   const markup = render([grocery]);
   assert.match(markup, /Estimated on this card/);
+  const uncertainCards = payload.accounts.map((card: any) => card.id === grocery.accountId
+    ? { ...card, rewardRules: { unit: "Example points", base: 1, bonuses: {}, potential: { Groceries: 5 } } } : card);
+  const uncertain = renderToStaticMarkup(createElement(TxnList, {
+    txns: [grocery], accountById: Object.fromEntries(uncertainCards.map((a: any) => [a.id, a])), rewardCards: uncertainCards,
+  }));
+  assert.match(uncertain, /Up to .* if the purchase qualifies for the bonus/);
   assert.doesNotMatch(markup, /Better with|No other configured card/);
   const dining = payload.transactions.find((t: any) => t.category === "Dining" && t.accountId === "demo-summit");
   assert.match(render([dining]), /Better with Harbor Rewards/);
@@ -1017,9 +1112,9 @@ test("navigation groups linked card products and lock in Settings and the planne
       createElement(PinContext.Provider, { value: { pin, setPin: () => {} } }, createElement(Shell)))));
   try {
     const settings = render("/settings");
-    assert.match(settings, /Connected banks[\s\S]*Disconnect bank-a[\s\S]*select-card-product-account-bank-a[\s\S]*button-lock-app/);
+    assert.match(settings, /Connected banks[\s\S]*Disconnect bank-a[\s\S]*select-card-product-account-bank-a[\s\S]*Sync rewards info[\s\S]*button-lock-app/);
     assert.match(settings, /<a(?=[^>]*href="#\/settings")(?=[^>]*aria-current="page")[^>]*>/);
-    assert.match(settings, /Search card products on the web/);
+    assert.match(settings, /Search card catalog/);
     assert.doesNotMatch(settings, /Built-in matches|Web matches|Use this product|Possible match from Plaid/);
     assert.doesNotMatch(settings, /open-card-recommendation/);
     assert.match(render("/connect"), /Connected banks/);
@@ -1033,7 +1128,7 @@ test("navigation groups linked card products and lock in Settings and the planne
     setShowSamples(true);
     const sampleSettings = render("/settings");
     assert.match(sampleSettings, /Demo Bank[\s\S]*button-lock-app/);
-    assert.doesNotMatch(sampleSettings, /account-bank-a|Connect a bank|Disconnect all banks/);
+    assert.doesNotMatch(sampleSettings, /account-bank-a|Connect a bank|Disconnect all banks|Sync rewards info/);
     const sampleActivity = render("/activity");
     assert.match(sampleActivity, /Which card should I use\?[\s\S]*Summit Travel/);
     assert.doesNotMatch(sampleActivity, /bank-a/);

@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import { cardName, estimateLabel } from "@/lib/format";
 import type { Account } from "@shared/schema";
 import {
-  rewardCategories, rewardCatalog, findRewardProduct, normalizeRewardName, readPublicCardName, rewardGroups,
+  rewardCategories, searchRewardCatalog, findCatalogProduct, readPublicCardName, rewardGroups,
   type CardSearchMatch, type RewardRules,
 } from "@shared/rewards";
 
@@ -63,15 +63,18 @@ export function CardRecommendation({ cards, sample }: { cards: Account[]; sample
 
 export const rewardProductMutationKey = ["card-reward-product"] as const;
 
-export function RewardProductEditor({ card, pin, disabled }: { card: Account; pin: string; disabled: boolean }) {
+export function RewardProductEditor({ card, pin, disabled, webSearchConfigured }: {
+  card: Account; pin: string; disabled: boolean; webSearchConfigured?: boolean;
+}) {
   const client = useQueryClient();
-  const selected = findRewardProduct(card.rewardProductId);
+  const selected = findCatalogProduct(card.rewardProductId);
   const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
   const [searchNotice, setSearchNotice] = useState("");
   const [draftMatch, setDraftMatch] = useState<CardSearchMatch | null>(null);
   const [notice, setNotice] = useState("");
   const [custom, setCustom] = useState(false);
-  const startingCustom = !selected ? card.rewardRules : undefined;
+  const startingCustom = !selected?.rules ? card.rewardRules : undefined;
   const [unit, setUnit] = useState(startingCustom?.unit ?? "");
   const [base, setBase] = useState(String(startingCustom?.base ?? "1"));
   const [rates, setRates] = useState<Record<string, string>>(
@@ -96,13 +99,7 @@ export function RewardProductEditor({ card, pin, disabled }: { card: Account; pi
   const market = card.currency === "CAD" ? "CA" : "US";
   const marketLabel = market === "CA" ? "Canada" : "U.S.";
   const lookup = useMutation({ mutationFn: (name: string) => api.searchCardProducts(name, market) });
-  const catalog = rewardCatalog.filter(p => p.currency === card.currency);
-  const query = lookup.variables;
-  const normalizedQuery = query ? normalizeRewardName(query) : "";
-  const choices = normalizedQuery ? catalog.filter(p => {
-    const hay = normalizeRewardName([p.name, ...p.aliases].join(" "));
-    return normalizedQuery.split(" ").every(word => hay.includes(word));
-  }) : [];
+  const choices = searchRewardCatalog(query, card.currency);
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
     const name = readPublicCardName(search);
@@ -111,7 +108,7 @@ export function RewardProductEditor({ card, pin, disabled }: { card: Account; pi
       return;
     }
     setSearchNotice("");
-    if (!lookup.isPending && !disabled) lookup.mutate(name);
+    if (!lookup.isPending && !disabled) setQuery(name);
   };
   const fillRates = (match: CardSearchMatch) => {
     setNotice("");
@@ -126,7 +123,7 @@ export function RewardProductEditor({ card, pin, disabled }: { card: Account; pi
     if (disabled || mutation.isPending) return;
     const bonuses = Object.fromEntries(Object.entries(rates)
       .filter(([, value]) => value.trim() !== "").map(([category, value]) => [category, Number(value)]));
-    const productName = draftMatch?.name ?? card.rewardRules?.productName;
+    const productName = draftMatch?.name ?? card.rewardRules?.productName ?? selected?.name;
     mutation.mutate({ rules: { ...(productName ? { productName } : {}), unit, base: Number(base), bonuses } });
   };
 
@@ -139,26 +136,34 @@ export function RewardProductEditor({ card, pin, disabled }: { card: Account; pi
       </summary>
       <p className="mt-2 break-words text-xs text-[#68757F]">Plaid name: {card.officialName || card.name} · {card.currency}</p>
       {selected && <p className="mt-2 text-xs leading-relaxed text-[#68757F]">
-        {selected.terms} <a className="font-semibold text-[#1F3A5F] underline" href={selected.source} target="_blank" rel="noreferrer">Issuer terms</a> · Checked {selected.checked}
+        {selected.terms} <a className="font-semibold text-[#1F3A5F] underline" href={selected.source} target="_blank" rel="noreferrer">Issuer terms</a>
+        {card.rewardRatesCheckedAt ? ` · Rates refreshed ${new Date(card.rewardRatesCheckedAt).toLocaleDateString()}` : ` · Catalog checked ${selected.checked}`}
+        {card.rewardRules && ` · Base: ${card.rewardRules.base}${card.rewardRules.unit.toLowerCase() === "cash back" ? "%" : "×"}`}
       </p>}
       <form onSubmit={submitSearch} className="mt-3">
-        <label className="block space-y-1 text-sm">Search card products on the web ({marketLabel})
+        <label className="block space-y-1 text-sm">Search card catalog ({marketLabel})
           <Input value={search} maxLength={100} disabled={lookup.isPending || disabled}
-            onChange={e => { setSearch(e.target.value); setSearchNotice(""); lookup.reset(); }} placeholder="Issuer or public card name" />
+            onChange={e => { setSearch(e.target.value); setQuery(""); setSearchNotice(""); lookup.reset(); }} placeholder="Issuer or public card name" />
         </label>
-        <p className="mt-1 text-xs text-[#68757F]">Search sends the name you type and the market, not your linked-card details. Don’t enter card numbers or personal information.</p>
         <Button size="sm" type="submit" variant="outline" className="mt-2" disabled={lookup.isPending || disabled || !search.trim()}>
-          {lookup.isPending ? "Searching…" : "Search"}
+          Search catalog
         </Button>
       </form>
       {searchNotice && <p role="alert" className="mt-2 text-xs text-[#8A3B3B]">{searchNotice}</p>}
       {!!choices.length && <ul className="mt-2 space-y-2" aria-label="Built-in matches">
         {choices.map(p => <li key={p.id} className="flex flex-wrap justify-between gap-2 border-t pt-2 text-sm">
-          <span>{p.name} <span className="text-xs text-[#68757F]">(built-in rates)</span></span>
+          <span>{p.name} <span className="text-xs text-[#68757F]">({p.rules ? "built-in estimates" : "terms available; no preset rates"})</span></span>
           <Button size="sm" variant="outline" disabled={disabled || mutation.isPending || p.id === selected?.id}
             onClick={() => mutation.mutate({ productId: p.id })}>{p.id === selected?.id ? "Selected" : "Use this product"}</Button>
         </li>)}
       </ul>}
+      {query && !choices.length && <p className="mt-2 text-xs">No catalog match. Try another name or check the issuer’s terms and enter rates.</p>}
+      {query && !choices.length && webSearchConfigured && <div className="mt-2">
+        <Button type="button" size="sm" variant="outline" disabled={disabled || lookup.isPending} onClick={() => lookup.mutate(query)}>
+          {lookup.isPending ? "Searching…" : "Search web in app (optional)"}
+        </Button>
+        <p className="mt-1 text-xs text-[#68757F]">Uses your configured search API and sends only the public name and market. Don’t enter personal details.</p>
+      </div>}
       {!!lookup.data?.matches.length && <ul className="mt-2 space-y-2" aria-label="Web matches">
         {lookup.data.matches.map(match => <li key={match.name} className="border-t pt-2 text-sm">
           <p className="break-words font-medium">{match.name}</p>
@@ -180,7 +185,7 @@ export function RewardProductEditor({ card, pin, disabled }: { card: Account; pi
       </a>}
       <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" variant="outline" onClick={() => setCustom(!custom)}>{custom ? "Hide custom rates" : "Enter custom rates"}</Button>
-        {card.rewardRules && <Button size="sm" variant="ghost" disabled={disabled || mutation.isPending} onClick={() => mutation.mutate({ rules: null })}>Clear rewards</Button>}
+        {(selected || card.rewardRules) && <Button size="sm" variant="ghost" disabled={disabled || mutation.isPending} onClick={() => mutation.mutate({ rules: null })}>Clear selection</Button>}
       </div>
       {custom && <form onSubmit={submitCustom} className="mt-3 space-y-2">
         {draftMatch && <p className="text-sm font-medium">

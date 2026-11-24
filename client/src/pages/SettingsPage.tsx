@@ -16,21 +16,69 @@ interface Config {
   plaidEnv: string;
   pinRequired: boolean;
   demoEnabled: boolean;
+  rewardWebSearchConfigured?: boolean;
 }
 
 export default function SettingsPage() {
   const { pin, setPin } = useContext(PinContext);
+  const sample = useSampleMode();
 
   return (
     <div>
       <h1 className="mb-3 text-[15px] font-semibold text-[#68757F]">Settings</h1>
       <BankConnections />
+      {!sample && <IssuerRewardsSettings pin={pin} />}
       {pin && <div className="mt-6 border-t border-[#D9DEE2] pt-4">
         <Button type="button" variant="outline" className="w-full border-[#D9DEE2]" onClick={() => setPin("")} data-testid="button-lock-app">
           <Lock size={16} className="mr-1.5" /> Lock app
         </Button>
       </div>}
     </div>
+  );
+}
+
+const issuerStatusLabels = {
+  "rates-refreshed": "Supported rates refreshed",
+  "listing-checked": "Issuer listing checked; rates not refreshed",
+  "needs-review": "Page needs review; rates unchanged",
+  unavailable: "Issuer page unavailable; rates unchanged",
+};
+
+function IssuerRewardsSettings({ pin }: { pin: string }) {
+  const client = useQueryClient();
+  const queryKey = ["issuer-rewards", pin];
+  const { data, error, isPending } = useQuery({ queryKey, queryFn: api.issuerRewards });
+  const sync = useMutation({
+    mutationFn: api.syncIssuerRewards,
+    onSuccess: (result) => {
+      client.setQueryData(queryKey, result);
+      return client.invalidateQueries({ queryKey: ["state", pin, false] });
+    },
+  });
+  return (
+    <section className="mt-6 rounded-xl bg-white p-4">
+      <h2 className="text-[15px] font-semibold">Issuer rewards</h2>
+      <p className="mt-1 text-xs leading-relaxed text-[#68757F]">
+        Checks public U.S. Chase and Amex personal and business listings and refreshes supported rates for Sapphire Preferred and the no-fee Hilton Honors card. No new API key or bank login required.
+      </p>
+      <Button type="button" variant="outline" className="mt-3 w-full" onClick={() => sync.mutate()} disabled={sync.isPending} data-testid="sync-issuer-rewards">
+        <RefreshCw size={15} className={sync.isPending ? "animate-spin" : undefined} />
+        {sync.isPending ? "Checking issuer sites…" : "Sync rewards info"}
+      </Button>
+      {(sync.error || error) && <p role="alert" className="mt-2 text-xs text-[#8A3B3B]">{(sync.error || error)?.message}</p>}
+      {isPending && <p role="status" className="mt-2 text-xs text-[#68757F]">Loading previous checks…</p>}
+      {data?.some(row => row.check) && <ul className="mt-3 space-y-2 text-xs" aria-label="Issuer sync status">
+        {data.map(({ source, check }) => <li key={source.id} className="border-t pt-2">
+          <a href={source.url} target="_blank" rel="noreferrer" className="font-semibold text-[#1F3A5F] underline">{source.label}</a>
+          <p className="mt-0.5 text-[#68757F]">
+            {check ? `${issuerStatusLabels[check.status]} · ${new Date(check.checkedAt).toLocaleString()}` : "Not checked yet"}
+          </p>
+          {check?.ratesAt && check.status !== "rates-refreshed" && <p className="text-[#68757F]">
+            Last usable issuer refresh: {new Date(check.ratesAt).toLocaleString()}
+          </p>}
+        </li>)}
+      </ul>}
+    </section>
   );
 }
 
@@ -284,7 +332,8 @@ function BankConnections() {
                       <h3 className="break-words text-sm font-medium">
                         {cardName(card)}{card.mask ? ` · •••• ${card.mask}` : ""}
                       </h3>
-                      <RewardProductEditor card={card} pin={pin} disabled={removeMutation.isPending || clearReal.isPending} />
+                      <RewardProductEditor card={card} pin={pin} webSearchConfigured={config.data?.rewardWebSearchConfigured}
+                        disabled={removeMutation.isPending || clearReal.isPending} />
                     </div>
                   ))}
                 </section>

@@ -73,6 +73,10 @@ const DDL = [
     product_id TEXT,
     rules TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS issuer_reward_checks (
+    source_id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS sync_issues (
     item_id TEXT PRIMARY KEY,
     status TEXT NOT NULL

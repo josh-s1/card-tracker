@@ -3,8 +3,9 @@
 ## Rewards, sync status and sample-only mode
 - The bottom navigation ends with Settings, not Connect or Lock. Settings → Show sample cards: only fictional cards, activity, spending, rewards and connection details; no bank controls. Turn off to restore live mode. Refresh or Lock app (at the bottom of Settings) resets the mode.
 - Cards and card detail show the last complete bank sync, failed/reconnect states and sample status.
-- Settings → Connected banks → Select card product below the linked card: no initial results. Submit a public product name for built-in and web matches; review a web draft and its source, then save or edit rates. If web lookup is unavailable, use the browser search link or enter custom rates.
-- Activity estimates posted purchases. Show only the best strictly higher comparable alternative, never equal, worse, incomparable, same-card, or overlapping ranges. Payments, fees and refunds do not earn estimates.
+- Settings → Connected banks → Select card product below the linked card: no initial results. Submit a name to search the free catalog. A terms-only selection must not generate a numeric estimate. Optional web search or manual rates remain available.
+- Settings → Sync rewards info: check the four U.S. issuer listings and directly refresh the two supported product templates. Show individual outcomes; keep prior usable rates if wording changes or the issuer is unreachable. No sync in sample mode.
+- Activity estimates posted purchases with a separately labeled conditional bonus where appropriate. Show only the best strictly higher comparable alternative, never equal, worse, incomparable, same-card, or overlapping ranges. Payments, fees and refunds do not earn estimates.
 - Activity → Which card should I use?: expand the planner, then choose category, currency and amount. Compare only the same reward units when ranking; show unknown cards separately. The old Connect and rewards bookmarks display Settings and Activity respectively.
 
 ## Card nicknames

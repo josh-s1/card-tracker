@@ -91,13 +91,22 @@ variables are needed.
 Cards show the last complete bank sync and whether the latest attempt failed or
 needs a reconnect. In Settings → Connected banks, open Select card product under
 a linked card to choose or change a product or enter custom rates. Lock app is
-at the bottom of Settings. The product picker starts empty. Each submitted web
-search sends only the public product name entered and the market (U.S. or Canada)
+at the bottom of Settings. The product picker starts empty; catalog search does
+not contact any provider. The U.S. Chase and Amex catalogs include both
+personal and business names. Some entries link to terms but need manual rates.
+An optional in-app web search sends only the public product name entered and the market (U.S. or Canada)
 to the [Perplexity Sonar API](https://docs.perplexity.ai/api-reference/legacy/sonar-post).
 Do not enter card numbers or personal information. Web matches are draft rates
 to verify against the linked terms and edit before saving; they are not fetched
 again automatically. Without the key, built-in matches, a browser web search
 link, and custom rates remain available.
+
+**Settings → Sync rewards info** is independent of Plaid and web search. It
+checks four public issuer directories and refreshes the supported reward
+rates for Chase Sapphire Preferred and the no-annual-fee Hilton Honors Amex if
+their detailed issuer terms still match recognized wording. Otherwise it retains
+the last usable rates and shows a review or unavailable status. It does not send
+account data or update other products’ rates. No new configuration is required.
 
 Activity includes Which card should I use? and estimates rewards on posted
 purchases with usable categories. A better-card suggestion appears only if the

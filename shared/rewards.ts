@@ -1,4 +1,5 @@
 import type { Account, Transaction } from "./schema";
+import { extraIssuerProducts, type IssuerDirectoryId } from "./issuer-catalog";
 
 export const rewardCategories = ["Dining", "Groceries", "Transport", "Shopping", "Subscriptions", "Health", "Travel", "Home", "Utilities", "Services", "Insurance", "Education", "Giving", "Entertainment", "Other"] as const;
 type Category = typeof rewardCategories[number];
@@ -8,21 +9,25 @@ export type RewardRules = {
   base: number;
   bonuses: Partial<Record<Category, number>>;
   potential?: Partial<Record<Category, number>>;
+  fallbackPotential?: number;
+  largePurchaseBoost?: { thresholdCents: number; rate: number };
 };
 
-export type RewardProduct = {
+export type RewardCatalogEntry = {
   id: string; name: string; aliases: string[]; currency: "USD" | "CAD";
-  source: string; checked: string; terms: string; rules: RewardRules;
+  source: string; checked: string; terms: string; rules?: RewardRules;
+  directory?: IssuerDirectoryId;
 };
+export type RewardProduct = RewardCatalogEntry & { rules: RewardRules };
 
 const checked = "2026-11-24";
-export const rewardCatalog: RewardProduct[] = [
-  { id: "chase-sapphire-preferred-us", name: "Chase Sapphire Preferred", aliases: ["Sapphire Preferred", "Chase Sapphire Preferred Card"], currency: "USD", checked,
+export const rewardCatalog: RewardCatalogEntry[] = [
+  { id: "chase-sapphire-preferred-us", name: "Chase Sapphire Preferred", aliases: ["Sapphire Preferred", "Chase Sapphire Preferred Card"], currency: "USD", checked, directory: "chase-personal",
     source: "https://creditcards.chase.com/rewards-credit-cards/sapphire/preferred",
-    terms: "5× requires Chase Travel; select online groceries, streaming, gas, EV charging and vacation homes have separate rules. Travel covered by the annual hotel credit does not earn points.",
+    terms: "Chase Travel, eligible online groceries, select streaming, gas, EV charging and vacation homes have separate rules. Travel covered by the annual hotel credit does not earn points.",
     rules: { unit: "Chase Ultimate Rewards points", base: 1, bonuses: { Dining: 3, Travel: 2 },
-      potential: { Travel: 5, Groceries: 3, Subscriptions: 3, Transport: 3, Entertainment: 3 } } },
-  { id: "amex-gold-us", name: "American Express Gold Card", aliases: ["Amex Gold", "American Express Gold"], currency: "USD", checked,
+      potential: { Travel: 5, Groceries: 3, Subscriptions: 3, Transport: 3 } } },
+  { id: "amex-gold-us", name: "American Express Gold Card", aliases: ["Amex Gold", "American Express Gold"], currency: "USD", checked, directory: "amex-personal",
     source: "https://www.americanexpress.com/us/credit-cards/card/gold-card/",
     terms: "4× eligible restaurants and U.S. supermarkets have separate annual caps; travel rates depend on booking type and channel (up to 5× on eligible prepaid hotels).",
     rules: { unit: "Amex Membership Rewards points", base: 1, bonuses: {}, potential: { Dining: 4, Groceries: 4, Travel: 5 } } },
@@ -34,7 +39,7 @@ export const rewardCatalog: RewardProduct[] = [
     source: "https://www.americanexpress.com/ca/en/benefits/gold-rewards-card/double.html",
     terms: "2× depends on eligible travel or purchases at eligible stand-alone Canadian gas stations, grocery stores and drugstores.",
     rules: { unit: "Amex Membership Rewards points", base: 1, bonuses: {}, potential: { Groceries: 2, Health: 2, Transport: 2, Travel: 2 } } },
-  { id: "chase-freedom-unlimited-us", name: "Chase Freedom Unlimited", aliases: ["Freedom Unlimited", "Chase Freedom Unlimited Card"], currency: "USD", checked,
+  { id: "chase-freedom-unlimited-us", name: "Chase Freedom Unlimited", aliases: ["Freedom Unlimited", "Chase Freedom Unlimited Card"], currency: "USD", checked, directory: "chase-personal",
     source: "https://creditcards.chase.com/cash-back-credit-cards/freedom/unlimited",
     terms: "3% at eligible restaurants and drugstores. 5% requires eligible Chase Travel bookings. Cash back is shown at the issuer’s standard cash rate.",
     rules: { unit: "Cash back", base: 1.5, bonuses: { Dining: 3 }, potential: { Health: 3, Travel: 5 } } },
@@ -42,14 +47,30 @@ export const rewardCatalog: RewardProduct[] = [
     source: "https://www.capitalone.com/credit-cards/venture/",
     terms: "5× applies to eligible hotels, vacation rentals and rental cars via Capital One Travel or purchases via Capital One Entertainment.",
     rules: { unit: "Capital One miles", base: 2, bonuses: {}, potential: { Travel: 5, Entertainment: 5 } } },
+  ...extraIssuerProducts,
 ];
 
-export function findRewardProduct(id: unknown) {
+export function findCatalogProduct(id: unknown) {
   return rewardCatalog.find(p => p.id === id);
 }
 
+export function findRewardProduct(id: unknown) {
+  return rewardCatalog.find((p): p is RewardProduct => p.id === id && !!p.rules);
+}
+
 export function normalizeRewardName(name: string) {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return name.replace(/[®™℠]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+export function searchRewardCatalog(query: string, currency: string) {
+  const words = normalizeRewardName(query).split(" ").filter(Boolean);
+  if (!words.length) return [];
+  return rewardCatalog.filter(p => {
+    if (p.currency !== currency) return false;
+    const issuer = p.id.startsWith("amex-") ? "amex american express" : p.id.startsWith("chase-") ? "chase" : "";
+    const tokens = normalizeRewardName([p.name, issuer, ...p.aliases].join(" ")).split(" ");
+    return words.every(word => tokens.some(token => word.length < 3 ? word === token : token.startsWith(word)));
+  });
 }
 
 export function readRewardRules(input: unknown): RewardRules | null {
@@ -84,6 +105,17 @@ export function readPublicCardName(input: unknown) {
 export type CardSearchSource = { title: string; url: string };
 export type CardSearchMatch = { name: string; rules: RewardRules; source: CardSearchSource };
 export type CardSearchResponse = { enabled: boolean; sources: CardSearchSource[]; matches: CardSearchMatch[] };
+export type StoredRewardRules = RewardRules | { unconfigured: true };
+
+export type IssuerRewardCheck = {
+  id: string;
+  checkedAt: string;
+  status: "rates-refreshed" | "listing-checked" | "needs-review" | "unavailable";
+  rates?: RewardRules;
+  ratesAt?: string;
+};
+export type IssuerRewardSource = { id: string; label: string; url: string; kind: "rates" | "directory" };
+export type IssuerRewardStatus = { source: IssuerRewardSource; check?: IssuerRewardCheck };
 
 export const demoRewards: Readonly<Record<string, RewardRules>> = {
   "demo-harbor": { unit: "Sample points", base: 1, bonuses: { Dining: 3, Groceries: 3 } },
@@ -96,8 +128,9 @@ export function rewardEstimate(card: Account, amountCents: number, category: str
   if (card.type !== "credit" || !rules || currency !== card.currency ||
       !Number.isSafeInteger(amountCents) || amountCents <= 0 ||
       !rewardCategories.includes(category as Category)) return null;
-  const rate = rules.bonuses[category as Category] ?? rules.base;
-  const potential = Math.max(rate, rules.potential?.[category as Category] ?? rate);
+  const boost = rules.largePurchaseBoost && amountCents >= rules.largePurchaseBoost.thresholdCents ? rules.largePurchaseBoost.rate : 0;
+  const rate = Math.max(boost, rules.bonuses[category as Category] ?? rules.base);
+  const potential = Math.max(rate, rules.fallbackPotential ?? rate, rules.potential?.[category as Category] ?? rate);
   return { card, rate, unit: rules.unit, value: amountCents * rate / 100, upper: amountCents * potential / 100 };
 }
 

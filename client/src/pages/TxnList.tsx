@@ -40,6 +40,8 @@ export function TxnList({
               const showRewards = rewardCards && acct?.type === "credit" && purchaseEligible(t);
               const currencyMatches = !t.rewardContext || t.rewardContext.currency === acct?.currency;
               const earned = showRewards ? transactionEstimate(acct, t, acct.currency) : null;
+              const standard = earned && acct ? estimateLabel({ ...earned, upper: earned.value }, acct.currency) : null;
+              const possible = earned && acct ? estimateLabel({ ...earned, value: earned.upper }, acct.currency) : null;
               const alternative = rewardCards ? betterTransactionAlternative(earned, rewardCards, t) : null;
               return (
                 <div
@@ -73,7 +75,12 @@ export function TxnList({
                   </div>
                   {showRewards && (
                     <div className="ml-5 mt-2 space-y-1 break-words text-xs text-[#41525E]">
-                      <p><span className="font-semibold">Estimated on this card:</span> {earned ? estimateLabel(earned, acct.currency) : currencyMatches ? "Set the card product to calculate" : "Currency does not match or is unavailable"}</p>
+                      <p><span className="font-semibold">Estimated on this card:</span> {standard ??
+                        (currencyMatches ? acct.rewardProductId ? "Add reward rates for this product in Settings" : "Set the card product to calculate"
+                          : "Currency does not match or is unavailable")}</p>
+                      {standard && possible && standard !== possible && <p>
+                        Up to {possible} if the purchase qualifies for the bonus.
+                      </p>}
                       {alternative && <p>Better with {cardName(alternative.card)}: {estimateLabel(alternative, acct.currency)} est.</p>}
                     </div>
                   )}

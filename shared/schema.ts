@@ -1,7 +1,7 @@
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import type * as z from "zod/mini";
-import type { RewardRules } from "./rewards";
+import type { IssuerRewardCheck, RewardRules, StoredRewardRules } from "./rewards";
 
 /**
  * A Plaid "Item" = one bank login (may contain several cards).
@@ -68,7 +68,12 @@ export const accountPreferences = sqliteTable("account_preferences", {
 export const rewardProfiles = sqliteTable("reward_profiles", {
   accountId: text("account_id").primaryKey(),
   productId: text("product_id"),
-  rules: text("rules", { mode: "json" }).$type<RewardRules>().notNull(),
+  rules: text("rules", { mode: "json" }).$type<StoredRewardRules>().notNull(),
+});
+
+export const issuerRewardChecks = sqliteTable("issuer_reward_checks", {
+  sourceId: text("source_id").primaryKey(),
+  payload: text("payload", { mode: "json" }).$type<IssuerRewardCheck>().notNull(),
 });
 
 export const syncIssues = sqliteTable("sync_issues", {
@@ -90,7 +95,9 @@ export const insertTransactionSchema = createInsertSchema(transactions);
 export type InsertItem = z.infer<typeof insertItemSchema>;
 export type Item = typeof items.$inferSelect;
 export type InsertAccount = z.infer<typeof insertAccountSchema>;
-export type Account = typeof accounts.$inferSelect & { nickname?: string | null; rewardRules?: RewardRules; rewardProductId?: string | null };
+export type Account = typeof accounts.$inferSelect & {
+  nickname?: string | null; rewardRules?: RewardRules; rewardProductId?: string | null; rewardRatesCheckedAt?: string;
+};
 export type InsertTransaction = z.infer<typeof insertTransactionSchema>;
 export type Transaction = typeof transactions.$inferSelect & {
   rewardContext?: Pick<typeof transactionRewardContext.$inferSelect, "currency" | "detailedCategory">;

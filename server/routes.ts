@@ -2,9 +2,10 @@ import type { Express, Request, Response } from "express";
 import type { Server } from "node:http";
 import { and, eq } from "drizzle-orm";
 import { db } from "./storage";
-import { items, accounts, transactions, accountPreferences, rewardProfiles, syncIssues, transactionRewardContext, type Item } from "@shared/schema";
-import { demoRewards, findRewardProduct, readPublicCardName, readRewardRules } from "@shared/rewards";
+import { items, accounts, transactions, accountPreferences, rewardProfiles, issuerRewardChecks, syncIssues, transactionRewardContext, type Item } from "@shared/schema";
+import { demoRewards, findCatalogProduct, readPublicCardName, readRewardRules, type IssuerRewardCheck } from "@shared/rewards";
 import { searchCardProducts } from "./card-product-search";
+import { checkIssuerRewards, issuerRewardSources } from "./issuer-rewards";
 import { buildSamples, seedDemoData, seedIfEmpty } from "./seed";
 import { createPinGuard } from "./auth";
 import { disconnectItem, DisconnectError } from "./data-lifecycle";
@@ -199,6 +200,7 @@ async function getState(showSamples = false) {
   const txnContexts = new Map((await db.select().from(transactionRewardContext)).map(c => [c.transactionId, c]));
   const preferences = await db.select().from(accountPreferences);
   const profiles = new Map((await db.select().from(rewardProfiles)).map(p => [p.accountId, p]));
+  const issuerRates = new Map((await db.select().from(issuerRewardChecks)).map(row => [row.sourceId, row.payload]));
   const issues = new Map((await db.select().from(syncIssues)).map(p => [p.itemId, p.status]));
   const nicknames = new Map(preferences.map(p => [p.accountId, p.nickname]));
   const visibleIds = new Set(visibleItems.map(i => i.id));
@@ -210,9 +212,14 @@ async function getState(showSamples = false) {
     accounts: allAccounts.filter(a => visibleIds.has(a.itemId))
       .map(a => {
         const profile = profiles.get(a.id);
-        const product = findRewardProduct(profile?.productId);
+        const product = findCatalogProduct(profile?.productId);
+        const issuerCheck = product ? issuerRates.get(product.id) : undefined;
+        const synced = product && issuerCheck?.rates && issuerCheck.ratesAt &&
+          Date.parse(issuerCheck.ratesAt) >= Date.parse(product.checked) ? issuerCheck : undefined;
+        const manual = profile?.rules && !("unconfigured" in profile.rules) ? profile.rules : undefined;
         return { ...a, nickname: nicknames.get(a.id) ?? null, rewardProductId: profile?.productId,
-          rewardRules: profile?.productId ? (product?.currency === a.currency ? product.rules : undefined) : profile?.rules };
+          rewardRatesCheckedAt: synced?.ratesAt,
+          rewardRules: profile?.productId ? (product?.currency === a.currency ? synced?.rates ?? product.rules : undefined) : manual };
       }),
     transactions: allTxns.filter(t => visibleIds.has(t.itemId)).map(t => {
       const context = txnContexts.get(t.id);
@@ -255,6 +262,7 @@ export async function registerRoutes(
       plaidEnv: plaidEnv(),
       pinRequired: Boolean(process.env.APP_PIN),
       demoEnabled: process.env.NODE_ENV !== "production",
+      rewardWebSearchConfigured: Boolean(process.env.PERPLEXITY_API_KEY?.trim()),
       securityRelease: "2026-11-24-rewards-sample-sync",
     });
   });
@@ -266,6 +274,38 @@ export async function registerRoutes(
   app.get("/api/state", wrap(async (req, res) => {
     res.json(await getState(req.get("x-show-samples") === "true"));
   }, true));
+
+  const readIssuerChecks = async () => (await db.select().from(issuerRewardChecks)).map(row => row.payload);
+  const issuerStatus = (checks: IssuerRewardCheck[]) =>
+    issuerRewardSources.map(source => ({ source, check: checks.find(check => check.id === source.id) }));
+
+  app.get("/api/issuer-rewards", wrap(async (_req, res) => {
+    res.json(issuerStatus(await readIssuerChecks()));
+  }));
+
+  let issuerSyncInFlight = false;
+  let nextIssuerSync = 0;
+  app.post("/api/issuer-rewards/sync", wrap(async (_req, res) => {
+    const now = Date.now();
+    if (issuerSyncInFlight || now < nextIssuerSync) {
+      res.setHeader("Retry-After", String(Math.max(1, Math.ceil((nextIssuerSync - now) / 1000))));
+      return res.status(429).json({ message: "Please wait before trying another issuer rewards sync." });
+    }
+    issuerSyncInFlight = true;
+    nextIssuerSync = now + 5 * 60_000;
+    try {
+      const checks = await checkIssuerRewards(await readIssuerChecks());
+      await db.transaction(async tx => {
+        for (const payload of checks) {
+          await tx.insert(issuerRewardChecks).values({ sourceId: payload.id, payload })
+            .onConflictDoUpdate({ target: issuerRewardChecks.sourceId, set: { payload } });
+        }
+      });
+      return res.json(issuerStatus(checks));
+    } finally {
+      issuerSyncInFlight = false;
+    }
+  }));
 
   let searchInFlight = false;
   let searchMinute = { expires: 0, count: 0 };
@@ -302,8 +342,8 @@ export async function registerRoutes(
 
   app.post("/api/accounts/reward-rules", wrap(async (req, res) => {
     const { accountId, rules, productId } = req.body ?? {};
-    const product = findRewardProduct(productId);
-    const parsed = product?.rules ?? readRewardRules(rules);
+    const product = findCatalogProduct(productId);
+    const parsed = product ? product.rules ?? { unconfigured: true as const } : readRewardRules(rules);
     const clearing = rules === null && productId === undefined;
     if (typeof accountId !== "string" || !accountId.trim() || accountId.length > 512 ||
         (!clearing && !parsed) || (productId !== undefined && (!product || rules !== undefined))) {
