@@ -3,7 +3,8 @@ import type { Server } from "node:http";
 import { and, eq } from "drizzle-orm";
 import { db } from "./storage";
 import { items, accounts, transactions, accountPreferences, rewardProfiles, syncIssues, transactionRewardContext, type Item } from "@shared/schema";
-import { demoRewards, findRewardProduct, readRewardRules } from "@shared/rewards";
+import { demoRewards, findRewardProduct, readPublicCardName, readRewardRules } from "@shared/rewards";
+import { searchCardProducts } from "./card-product-search";
 import { buildSamples, seedDemoData, seedIfEmpty } from "./seed";
 import { createPinGuard } from "./auth";
 import { disconnectItem, DisconnectError } from "./data-lifecycle";
@@ -265,6 +266,39 @@ export async function registerRoutes(
   app.get("/api/state", wrap(async (req, res) => {
     res.json(await getState(req.get("x-show-samples") === "true"));
   }, true));
+
+  let searchInFlight = false;
+  let searchMinute = { expires: 0, count: 0 };
+  let searchDay = { expires: 0, count: 0 };
+  app.post("/api/card-products/search", wrap(async (req, res) => {
+    const { name, market } = req.body ?? {};
+    const query = readPublicCardName(name);
+    if (!query || (market !== "US" && market !== "CA") || Object.keys(req.body).length !== 2) {
+      return res.status(400).json({ message: "Enter a public card product name, not a card number or personal information." });
+    }
+    const key = process.env.PERPLEXITY_API_KEY?.trim();
+    if (!key) return res.json({ enabled: false, matches: [], sources: [] });
+    const now = Date.now();
+    if (now >= searchMinute.expires) searchMinute = { expires: now + 60_000, count: 0 };
+    if (now >= searchDay.expires) searchDay = { expires: now + 86_400_000, count: 0 };
+    if (searchInFlight || searchMinute.count >= 4 || searchDay.count >= 40) {
+      const wait = Math.max(searchInFlight ? 30_000 : 0,
+        searchMinute.count >= 4 ? searchMinute.expires - now : 0,
+        searchDay.count >= 40 ? searchDay.expires - now : 0);
+      res.setHeader("Retry-After", String(Math.ceil(wait / 1000)));
+      return res.status(429).json({ message: "Search limit reached. Try again later or open web search in your browser." });
+    }
+    searchInFlight = true;
+    searchMinute.count++;
+    searchDay.count++;
+    try {
+      return res.json(await searchCardProducts(query, market, key));
+    } catch {
+      return res.status(502).json({ message: "In-app web search is temporarily unavailable. Try again or open search in your browser." });
+    } finally {
+      searchInFlight = false;
+    }
+  }));
 
   app.post("/api/accounts/reward-rules", wrap(async (req, res) => {
     const { accountId, rules, productId } = req.body ?? {};

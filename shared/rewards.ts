@@ -3,6 +3,7 @@ import type { Account, Transaction } from "./schema";
 export const rewardCategories = ["Dining", "Groceries", "Transport", "Shopping", "Subscriptions", "Health", "Travel", "Home", "Utilities", "Services", "Insurance", "Education", "Giving", "Entertainment", "Other"] as const;
 type Category = typeof rewardCategories[number];
 export type RewardRules = {
+  productName?: string;
   unit: string;
   base: number;
   bonuses: Partial<Record<Category, number>>;
@@ -53,7 +54,7 @@ export function normalizeRewardName(name: string) {
 
 export function readRewardRules(input: unknown): RewardRules | null {
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
-  const { unit, base, bonuses } = input as Record<string, unknown>;
+  const { unit, base, bonuses, productName } = input as Record<string, unknown>;
   const rate = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 50;
   if (typeof unit !== "string" || !unit.trim() || unit.trim().length > 40 || /[\x00-\x1f\x7f]/.test(unit) ||
     !rate(base) || !bonuses || typeof bonuses !== "object" || Array.isArray(bonuses)) return null;
@@ -62,8 +63,27 @@ export function readRewardRules(input: unknown): RewardRules | null {
     if (!rewardCategories.includes(key as Category) || !rate(value)) return null;
     cleaned[key as Category] = value;
   }
-  return { unit: unit.trim(), base, bonuses: cleaned };
+  const name = productName === undefined ? undefined : readPublicCardName(productName);
+  if (productName !== undefined && !name) return null;
+  return { ...(name ? { productName: name } : {}), unit: unit.trim(), base, bonuses: cleaned };
 }
+
+const publicNameLetter = new RegExp("\\p{L}", "u");
+const publicNameCharacters = new RegExp("^[\\p{L}\\p{M}0-9 &.'’+®™%(),/-]+$", "u");
+
+// Only user-entered public product names can go to the search provider.
+export function readPublicCardName(input: unknown) {
+  if (typeof input !== "string") return null;
+  const name = input.normalize("NFKC").trim().replace(/ +/g, " ");
+  if (name.length < 2 || name.length > 100 || !publicNameLetter.test(name) ||
+      !publicNameCharacters.test(name) || name.replace(/\D/g, "").length >= 12 ||
+      /(?:\bwww\.|\.(?:com|net|org|ca)\b|\/\/)/i.test(name)) return null;
+  return name;
+}
+
+export type CardSearchSource = { title: string; url: string };
+export type CardSearchMatch = { name: string; rules: RewardRules; source: CardSearchSource };
+export type CardSearchResponse = { enabled: boolean; sources: CardSearchSource[]; matches: CardSearchMatch[] };
 
 export const demoRewards: Readonly<Record<string, RewardRules>> = {
   "demo-harbor": { unit: "Sample points", base: 1, bonuses: { Dining: 3, Groceries: 3 } },
@@ -97,6 +117,21 @@ export function transactionEstimate(card: Account, t: Transaction, billingCurren
     value: Math.min(estimate.value, groceries?.value ?? estimate.value, t.amountCents * card.rewardRules!.base / 100),
     upper: Math.max(estimate.upper, groceries?.upper ?? estimate.upper),
   };
+}
+
+export function betterTransactionAlternative(earned: ReturnType<typeof transactionEstimate>, cards: Account[], t: Transaction) {
+  if (!earned) return null;
+  const unit = earned.unit.toLowerCase();
+  const precision = unit === "cash back" ? 1 : 100;
+  const threshold = Math.round(earned.upper * precision);
+  let best: ReturnType<typeof transactionEstimate> = null;
+  for (const card of cards) {
+    if (card.id === earned.card.id) continue;
+    const row = transactionEstimate(card, t, earned.card.currency);
+    if (!row || row.unit.toLowerCase() !== unit || Math.round(row.value * precision) <= threshold) continue;
+    if (!best || row.value > best.value || (row.value === best.value && row.upper > best.upper)) best = row;
+  }
+  return best;
 }
 
 export function rewardGroups(cards: Account[], cents: number, category: string, currency: string) {

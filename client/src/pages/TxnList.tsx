@@ -1,6 +1,6 @@
 import type { Transaction, Account } from "@shared/schema";
 import { money, catColor, displayMerchant, dayLabel, cardName, estimateLabel } from "@/lib/format";
-import { purchaseEligible, transactionEstimate } from "@shared/rewards";
+import { betterTransactionAlternative, purchaseEligible, transactionEstimate } from "@shared/rewards";
 
 export function TxnList({
   txns,
@@ -40,10 +40,7 @@ export function TxnList({
               const showRewards = rewardCards && acct?.type === "credit" && purchaseEligible(t);
               const currencyMatches = !t.rewardContext || t.rewardContext.currency === acct?.currency;
               const earned = showRewards ? transactionEstimate(acct, t, acct.currency) : null;
-              const alternatives = showRewards
-                ? rewardCards.filter(c => c.id !== acct.id)
-                    .map(c => transactionEstimate(c, t, acct.currency)).filter(row => row !== null)
-                : [];
+              const alternative = rewardCards ? betterTransactionAlternative(earned, rewardCards, t) : null;
               return (
                 <div
                   key={t.id}
@@ -77,9 +74,7 @@ export function TxnList({
                   {showRewards && (
                     <div className="ml-5 mt-2 space-y-1 break-words text-xs text-[#41525E]">
                       <p><span className="font-semibold">Estimated on this card:</span> {earned ? estimateLabel(earned, acct.currency) : currencyMatches ? "Set the card product to calculate" : "Currency does not match or is unavailable"}</p>
-                      {currencyMatches && (alternatives.length
-                        ? alternatives.map(row => <p key={row.card.id}>With {cardName(row.card)}: {estimateLabel(row, acct.currency)} est.</p>)
-                        : <p>No other configured card in {acct.currency}.</p>)}
+                      {alternative && <p>Better with {cardName(alternative.card)}: {estimateLabel(alternative, acct.currency)} est.</p>}
                     </div>
                   )}
                 </div>

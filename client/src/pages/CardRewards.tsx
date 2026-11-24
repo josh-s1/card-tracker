@@ -7,8 +7,8 @@ import { api } from "@/lib/api";
 import { cardName, estimateLabel } from "@/lib/format";
 import type { Account } from "@shared/schema";
 import {
-  rewardCategories, rewardCatalog, findRewardProduct, normalizeRewardName, rewardGroups,
-  type RewardRules,
+  rewardCategories, rewardCatalog, findRewardProduct, normalizeRewardName, readPublicCardName, rewardGroups,
+  type CardSearchMatch, type RewardRules,
 } from "@shared/rewards";
 
 export function CardRecommendation({ cards, sample }: { cards: Account[]; sample: boolean }) {
@@ -67,6 +67,8 @@ export function RewardProductEditor({ card, pin, disabled }: { card: Account; pi
   const client = useQueryClient();
   const selected = findRewardProduct(card.rewardProductId);
   const [search, setSearch] = useState("");
+  const [searchNotice, setSearchNotice] = useState("");
+  const [draftMatch, setDraftMatch] = useState<CardSearchMatch | null>(null);
   const [notice, setNotice] = useState("");
   const [custom, setCustom] = useState(false);
   const startingCustom = !selected ? card.rewardRules : undefined;
@@ -79,52 +81,111 @@ export function RewardProductEditor({ card, pin, disabled }: { card: Account; pi
     mutationKey: rewardProductMutationKey,
     mutationFn: (selection: { productId: string } | { rules: RewardRules | null }) => api.saveRewardRules(card.id, selection),
     onMutate: () => setNotice(""),
-    onSuccess: async () => {
+    onSuccess: async (_result, selection) => {
       await client.invalidateQueries({ queryKey: ["state", pin, false] });
+      if ("productId" in selection || !selection.rules) {
+        setDraftMatch(null);
+        setCustom(false);
+        setUnit("");
+        setBase("1");
+        setRates({});
+      }
       setNotice("Reward settings saved.");
     },
   });
+  const market = card.currency === "CAD" ? "CA" : "US";
+  const marketLabel = market === "CA" ? "Canada" : "U.S.";
+  const lookup = useMutation({ mutationFn: (name: string) => api.searchCardProducts(name, market) });
   const catalog = rewardCatalog.filter(p => p.currency === card.currency);
-  const names = [card.name, card.officialName ?? ""].map(normalizeRewardName);
-  const suggested = catalog.filter(p => [p.name, ...p.aliases].some(n => names.includes(normalizeRewardName(n))));
-  const choices = catalog.filter(p => {
+  const query = lookup.variables;
+  const normalizedQuery = query ? normalizeRewardName(query) : "";
+  const choices = normalizedQuery ? catalog.filter(p => {
     const hay = normalizeRewardName([p.name, ...p.aliases].join(" "));
-    return normalizeRewardName(search).split(" ").every(word => hay.includes(word));
-  });
+    return normalizedQuery.split(" ").every(word => hay.includes(word));
+  }) : [];
+  const submitSearch = (event: FormEvent) => {
+    event.preventDefault();
+    const name = readPublicCardName(search);
+    if (!name) {
+      setSearchNotice("Enter the public card product name, not a card number or personal information.");
+      return;
+    }
+    setSearchNotice("");
+    if (!lookup.isPending && !disabled) lookup.mutate(name);
+  };
+  const fillRates = (match: CardSearchMatch) => {
+    setNotice("");
+    setDraftMatch(match);
+    setUnit(match.rules.unit);
+    setBase(String(match.rules.base));
+    setRates(Object.fromEntries(Object.entries(match.rules.bonuses).map(([k, v]) => [k, String(v)])));
+    setCustom(true);
+  };
   const submitCustom = (event: FormEvent) => {
     event.preventDefault();
     if (disabled || mutation.isPending) return;
     const bonuses = Object.fromEntries(Object.entries(rates)
       .filter(([, value]) => value.trim() !== "").map(([category, value]) => [category, Number(value)]));
-    mutation.mutate({ rules: { unit, base: Number(base), bonuses } });
+    const productName = draftMatch?.name ?? card.rewardRules?.productName;
+    mutation.mutate({ rules: { ...(productName ? { productName } : {}), unit, base: Number(base), bonuses } });
   };
 
   return (
     <details className="mt-1 rounded-lg bg-[#F2F4F6] p-2.5">
       <summary className="cursor-pointer break-words text-sm font-semibold text-[#1F3A5F]" data-testid={`select-card-product-${card.id}`}>
-        {selected ? `Change card product · ${selected.name}` : card.rewardRules ? "Change card product · Custom rates" : "Select card product"}
+        {selected || card.rewardRules
+          ? `Change card product · ${selected?.name ?? card.rewardRules?.productName ?? "Custom rates"}`
+          : "Select card product"}
       </summary>
       <p className="mt-2 break-words text-xs text-[#68757F]">Plaid name: {card.officialName || card.name} · {card.currency}</p>
       {selected && <p className="mt-2 text-xs leading-relaxed text-[#68757F]">
         {selected.terms} <a className="font-semibold text-[#1F3A5F] underline" href={selected.source} target="_blank" rel="noreferrer">Issuer terms</a> · Checked {selected.checked}
       </p>}
-      <label className="mt-3 block space-y-1 text-sm">Search card products
-        <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Issuer or card name" />
-      </label>
-      {!!suggested.length && !selected && <p className="mt-2 text-xs">Possible match from Plaid: {suggested.map(p => p.name).join(", ")}. Confirm the product before using its rates.</p>}
-      <ul className="mt-2 space-y-2">
+      <form onSubmit={submitSearch} className="mt-3">
+        <label className="block space-y-1 text-sm">Search card products on the web ({marketLabel})
+          <Input value={search} maxLength={100} disabled={lookup.isPending || disabled}
+            onChange={e => { setSearch(e.target.value); setSearchNotice(""); lookup.reset(); }} placeholder="Issuer or public card name" />
+        </label>
+        <p className="mt-1 text-xs text-[#68757F]">Search sends the name you type and the market, not your linked-card details. Don’t enter card numbers or personal information.</p>
+        <Button size="sm" type="submit" variant="outline" className="mt-2" disabled={lookup.isPending || disabled || !search.trim()}>
+          {lookup.isPending ? "Searching…" : "Search"}
+        </Button>
+      </form>
+      {searchNotice && <p role="alert" className="mt-2 text-xs text-[#8A3B3B]">{searchNotice}</p>}
+      {!!choices.length && <ul className="mt-2 space-y-2" aria-label="Built-in matches">
         {choices.map(p => <li key={p.id} className="flex flex-wrap justify-between gap-2 border-t pt-2 text-sm">
-          <span>{p.name} <span className="text-xs text-[#68757F]">({p.currency === "CAD" ? "Canada" : "U.S."})</span></span>
+          <span>{p.name} <span className="text-xs text-[#68757F]">(built-in rates)</span></span>
           <Button size="sm" variant="outline" disabled={disabled || mutation.isPending || p.id === selected?.id}
             onClick={() => mutation.mutate({ productId: p.id })}>{p.id === selected?.id ? "Selected" : "Use this product"}</Button>
         </li>)}
-      </ul>
-      {!choices.length && <p className="mt-2 text-xs">No match in the current catalog. You can enter your own rates instead.</p>}
+      </ul>}
+      {!!lookup.data?.matches.length && <ul className="mt-2 space-y-2" aria-label="Web matches">
+        {lookup.data.matches.map(match => <li key={match.name} className="border-t pt-2 text-sm">
+          <p className="break-words font-medium">{match.name}</p>
+          <a href={match.source.url} target="_blank" rel="noreferrer" className="break-words text-xs text-[#1F3A5F] underline">Check terms ({new URL(match.source.url).hostname})</a>
+          <Button size="sm" variant="outline" className="ml-2" disabled={disabled || mutation.isPending} onClick={() => fillRates(match)}>Review rates</Button>
+        </li>)}
+      </ul>}
+      {lookup.error && <p role="alert" className="mt-2 text-xs text-[#8A3B3B]">{lookup.error.message}</p>}
+      {lookup.data?.enabled === false && <p className="mt-2 text-xs">In-app web search isn’t configured yet. You can still search in your browser and enter rates.</p>}
+      {lookup.data?.enabled && !lookup.data.matches.length && <>
+        <p className="mt-2 text-xs">No sourced rate draft was found. Check the results or enter the issuer’s rates manually.</p>
+        {!!lookup.data.sources.length && <ul className="mt-2 space-y-1 text-xs">
+          {lookup.data.sources.map(source => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer" className="break-words text-[#1F3A5F] underline">{source.title}</a></li>)}
+        </ul>}
+      </>}
+      {query && !lookup.isPending && <a className="mt-2 inline-block text-xs text-[#1F3A5F] underline" target="_blank" rel="noreferrer"
+        href={`https://duckduckgo.com/?q=${encodeURIComponent(`${query} ${market === "CA" ? "Canada" : "United States"} credit card rewards issuer terms`)}`}>
+        Open web search in your browser
+      </a>}
       <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" variant="outline" onClick={() => setCustom(!custom)}>{custom ? "Hide custom rates" : "Enter custom rates"}</Button>
         {card.rewardRules && <Button size="sm" variant="ghost" disabled={disabled || mutation.isPending} onClick={() => mutation.mutate({ rules: null })}>Clear rewards</Button>}
       </div>
       {custom && <form onSubmit={submitCustom} className="mt-3 space-y-2">
+        {draftMatch && <p className="text-sm font-medium">
+          Review {draftMatch.name} before saving. Web-suggested rates can be wrong or incomplete. <a href={draftMatch.source.url} target="_blank" rel="noreferrer" className="text-[#1F3A5F] underline">Check the source</a>.
+        </p>}
         <p className="text-xs text-[#68757F]">Use the exact rewards program name. Enter “Cash back” for percentage rates. Only enter bonuses that apply to the whole category; caps and special offers aren’t tracked here.</p>
         <label className="block text-sm">Rewards program<Input value={unit} onChange={e => setUnit(e.target.value)} required maxLength={40} /></label>
         <label className="block text-sm">Base points per dollar or cash-back %<Input required type="number" min="0" max="50" step="0.01" value={base} onChange={e => setBase(e.target.value)} /></label>
@@ -133,7 +194,7 @@ export function RewardProductEditor({ card, pin, disabled }: { card: Account; pi
             <Input type="number" min="0" max="50" step="0.01" placeholder="Base" value={rates[category] ?? ""} onChange={e => setRates(v => ({ ...v, [category]: e.target.value }))} />
           </label>)}
         </div>
-        <Button size="sm" type="submit" disabled={disabled || mutation.isPending}>Save custom rates</Button>
+        <Button size="sm" type="submit" disabled={disabled || mutation.isPending}>{draftMatch ? "Save reviewed product and rates" : "Save custom rates"}</Button>
       </form>}
       {notice && <p role="status" className="mt-2 text-xs">{notice}</p>}
       {mutation.error && <p role="alert" className="mt-2 text-xs text-[#8A3B3B]">{mutation.error.message}</p>}

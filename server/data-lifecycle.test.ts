@@ -9,7 +9,7 @@ import { Router } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { db, ensureSchema } from "./storage";
 import { items, accounts, transactions, accountPreferences, rewardProfiles, syncIssues, transactionRewardContext } from "../shared/schema";
-import { findRewardProduct, purchaseEligible, rewardGroups, rewardEstimate, transactionEstimate } from "../shared/rewards";
+import { betterTransactionAlternative, findRewardProduct, purchaseEligible, rewardGroups, rewardEstimate, transactionEstimate } from "../shared/rewards";
 import { disconnectItem, DisconnectError } from "./data-lifecycle";
 import { seedDemoData, seedIfEmpty } from "./seed";
 import { registerRoutes, syncItem } from "./routes";
@@ -162,6 +162,7 @@ async function invoke(path: string, body?: unknown, method = "POST", headers: Re
   let status = 200;
   let payload: any;
   const response = {
+    setHeader() {},
     status(code: number) { status = code; return response; },
     json(value: unknown) { payload = value; return response; },
   };
@@ -834,8 +835,9 @@ test("reward product selection, switching, custom rates and clearing scope to a 
   assert.equal((await invoke(path, { accountId, productId: "chase-sapphire-preferred-us" })).status, 200);
   assert.equal((await current()).rewardRules.bonuses.Dining, 3);
   assert.equal((await invoke(path, { accountId, rules: { unit: "Miles", base: -5, bonuses: {} } })).status, 400);
-  assert.equal((await invoke(path, { accountId, rules: { unit: "Miles", base: 2, bonuses: { Travel: 3 } } })).status, 200);
+  assert.equal((await invoke(path, { accountId, rules: { productName: "Example Altitude Card", unit: "Miles", base: 2, bonuses: { Travel: 3 } } })).status, 200);
   assert.equal((await current()).rewardProductId, null);
+  assert.equal((await current()).rewardRules.productName, "Example Altitude Card");
   assert.equal((await current()).rewardRules.bonuses.Travel, 3);
   assert.equal((await invoke(path, { accountId: "missing", rules: null })).status, 404);
   assert.equal((await invoke(path, { accountId, rules: null })).status, 200);
@@ -908,7 +910,7 @@ test("a complete sync clears prior failure, records grocery detail and safely ha
   assert.equal(legacy?.upper, 30);
 });
 
-test("activity renders sample reward estimates and alternative cards but not for payments", async () => {
+test("activity shows a strictly better sample alternative, hides worse cards, and skips payments", async () => {
   await fixture();
   await routes();
   const { payload } = await invoke("/api/state", undefined, "GET", { "x-show-samples": "true" });
@@ -919,8 +921,85 @@ test("activity renders sample reward estimates and alternative cards but not for
   const grocery = payload.transactions.find((t: any) => t.category === "Groceries");
   const markup = render([grocery]);
   assert.match(markup, /Estimated on this card/);
-  assert.match(markup, /With Summit Travel/);
+  assert.doesNotMatch(markup, /Better with|No other configured card/);
+  const dining = payload.transactions.find((t: any) => t.category === "Dining" && t.accountId === "demo-summit");
+  assert.match(render([dining]), /Better with Harbor Rewards/);
   assert.doesNotMatch(render([payload.transactions.find((t: any) => t.category === "Payment")]), /Estimated on this card/);
+});
+
+test("better-card estimates exclude equal, overlapping, rounded-equal and incomparable alternatives", async () => {
+  await fixture();
+  const s = await snapshot();
+  const t = { ...s.transactions[0], category: "Shopping", amountCents: 1_000 };
+  const original = { ...s.accounts[0], rewardRules: { unit: "Cash back", base: 2, bonuses: {}, potential: { Shopping: 3 } } };
+  const cardAt = (id: string, base: number, unit = "Cash back", currency = original.currency) =>
+    ({ ...original, id, currency, rewardRules: { unit, base, bonuses: {} } });
+  const earned = transactionEstimate(original, t, original.currency);
+  assert.ok(earned);
+  const excluded = [
+    cardAt(original.id, 10), cardAt("same", 2), cardAt("worse", 1), cardAt("overlap", 2.5),
+    cardAt("touch", 3), cardAt("rounded", 3.01),
+    cardAt("different-program", 5, "Example points"), cardAt("different-market", 5, "Cash back", "CAD"),
+  ];
+  assert.equal(betterTransactionAlternative(earned, excluded, t), null);
+  assert.equal(betterTransactionAlternative(null, [cardAt("good", 4)], t), null);
+  assert.equal(betterTransactionAlternative(earned, [...excluded, cardAt("good", 4), cardAt("best", 5)], t)?.card.id, "best");
+});
+
+test("web card search uses only a public name and market, validates drafts, and bounds provider use", async () => {
+  await fixture();
+  await routes();
+  const path = "/api/card-products/search";
+  const request = { name: "Example Altitude Card", market: "CA" };
+  const original = globalThis.fetch;
+  const before = await snapshot();
+  let calls = 0;
+  const issuer = "https://issuer.example.com/cards/altitude";
+  const good = { name: "Example Altitude Card", unit: "Cash back", base: 2, bonuses: [{ category: "Dining", rate: 3 }], sourceUrl: issuer };
+  try {
+    globalThis.fetch = async () => assert.fail("disabled web search must not call a provider");
+    assert.deepEqual((await invoke(path, request)).payload, { enabled: false, matches: [], sources: [] });
+    process.env.PERPLEXITY_API_KEY = "dummy-search-key";
+    globalThis.fetch = async (url, init) => {
+      calls++;
+      assert.equal(url, "https://api.perplexity.ai/v1/sonar");
+      assert.equal(init?.redirect, "error");
+      assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer dummy-search-key");
+      const body = JSON.parse(String(init?.body));
+      assert.match(body.messages[1].content, /"publicProductName":"Example Altitude Card","market":"Canada"/);
+      assert.doesNotMatch(JSON.stringify(body), /bank-a|accountId|dummy-test-password/);
+      return mockResponse(200, JSON.stringify({
+        search_results: [
+          { url: issuer, title: "Issuer product terms" },
+          { url: "javascript:alert(1)", title: "Unsafe link" },
+          { url: "https://127.0.0.1/", title: "Local link" },
+        ],
+        choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ matches: [
+          good,
+          { ...good, name: "Bad foreign link", sourceUrl: "https://not-from-search.example.com/" },
+          { ...good, name: "Invalid rates", base: 500 },
+        ] }) } }],
+      }));
+    };
+    assert.equal((await invoke(path, { name: "Example 4111 1111 1111 1111", market: "CA" })).status, 400);
+    assert.equal((await invoke(path, { ...request, accountId: "account-bank-a" })).status, 400);
+    assert.equal((await invoke(path, request, "POST", { "x-show-samples": "true" })).status, 403);
+    assert.equal(calls, 0);
+    const reply = await invoke(path, request);
+    assert.equal(reply.status, 200);
+    assert.deepEqual(reply.payload, { enabled: true, matches: [{
+      name: good.name, rules: { productName: good.name, unit: "Cash back", base: 2, bonuses: { Dining: 3 } },
+      source: { url: issuer, title: "Issuer product terms" },
+    }], sources: [{ url: issuer, title: "Issuer product terms" }] });
+    for (let i = 0; i < 3; i++) assert.equal((await invoke(path, request)).status, 200);
+    assert.equal((await invoke(path, request)).status, 429);
+    assert.equal(calls, 4);
+    assert.deepEqual(await snapshot(), before);
+    assert.deepEqual(await db.select().from(rewardProfiles), []);
+  } finally {
+    globalThis.fetch = original;
+    delete process.env.PERPLEXITY_API_KEY;
+  }
 });
 
 test("navigation groups linked card products and lock in Settings and the planner in Activity", async () => {
@@ -940,6 +1019,8 @@ test("navigation groups linked card products and lock in Settings and the planne
     const settings = render("/settings");
     assert.match(settings, /Connected banks[\s\S]*Disconnect bank-a[\s\S]*select-card-product-account-bank-a[\s\S]*button-lock-app/);
     assert.match(settings, /<a(?=[^>]*href="#\/settings")(?=[^>]*aria-current="page")[^>]*>/);
+    assert.match(settings, /Search card products on the web/);
+    assert.doesNotMatch(settings, /Built-in matches|Web matches|Use this product|Possible match from Plaid/);
     assert.doesNotMatch(settings, /open-card-recommendation/);
     assert.match(render("/connect"), /Connected banks/);
     const activity = render("/activity");

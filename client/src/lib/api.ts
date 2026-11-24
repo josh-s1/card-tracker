@@ -1,3 +1,5 @@
+import type { CardSearchResponse } from "@shared/rewards";
+
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
 let currentPin = "";
@@ -67,6 +69,8 @@ export const api = {
   }),
   saveRewardRules: (accountId: string, selection: { rules: unknown } | { productId: string }) =>
     apiJson("/api/accounts/reward-rules", { method: "POST", body: JSON.stringify({ accountId, ...selection }) }),
+  searchCardProducts: (name: string, market: "US" | "CA") =>
+    apiJson<CardSearchResponse>("/api/card-products/search", { method: "POST", body: JSON.stringify({ name, market }) }),
   renameCard: (accountId: string, nickname: string) =>
     apiJson("/api/accounts/nickname", {
       method: "POST",

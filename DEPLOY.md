@@ -21,6 +21,7 @@ redeployment.
 | `PLAID_SECRET` | The current secret for the selected Plaid environment. |
 | `TURSO_DATABASE_URL` | Your intended persistent Turso database URL. |
 | `TURSO_AUTH_TOKEN` | A current token restricted to that database, with only the permissions this app requires. |
+| `PERPLEXITY_API_KEY` | Optional. A key from the [Perplexity API Console](https://console.perplexity.ai/project/keys) enables in-app web lookup for card reward terms. Store it only in Render Environment. API requests can be billed separately. |
 
 Keep a secure backup of `TOKEN_ENCRYPTION_KEY` separate from the database.
 Changing or losing it makes existing encrypted bank tokens unreadable. Encryption
@@ -90,12 +91,19 @@ variables are needed.
 Cards show the last complete bank sync and whether the latest attempt failed or
 needs a reconnect. In Settings → Connected banks, open Select card product under
 a linked card to choose or change a product or enter custom rates. Lock app is
-at the bottom of Settings. Activity includes Which card should I use? and estimates rewards on
-posted purchases with usable categories and compares configured cards in the
-same billing currency. The picker links to issuer terms and the catalog check
-date. Catalog rates update with releases; rates do not automatically scrape
-issuer sites. This feature does not read issuer-posted rewards or reconstruct
-historical caps and offers. Startup adds separate reward and sync metadata tables.
+at the bottom of Settings. The product picker starts empty. Each submitted web
+search sends only the public product name entered and the market (U.S. or Canada)
+to the [Perplexity Sonar API](https://docs.perplexity.ai/api-reference/legacy/sonar-post).
+Do not enter card numbers or personal information. Web matches are draft rates
+to verify against the linked terms and edit before saving; they are not fetched
+again automatically. Without the key, built-in matches, a browser web search
+link, and custom rates remain available.
+
+Activity includes Which card should I use? and estimates rewards on posted
+purchases with usable categories. A better-card suggestion appears only if the
+alternative's low estimate exceeds the original card's high estimate in the
+same rewards program and currency. This feature does not read issuer-posted
+rewards or reconstruct historical caps and offers.
 
 Only after approval and the checks above, open the app, unlock it, and use
 Connect a bank. Enter bank credentials only in the bank/Plaid authentication
