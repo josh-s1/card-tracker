@@ -4,6 +4,9 @@ import { test } from "node:test";
 import { eq, sql } from "drizzle-orm";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Router } from "wouter";
+import { useHashLocation } from "wouter/use-hash-location";
 import { db, ensureSchema } from "./storage";
 import { items, accounts, transactions, accountPreferences, rewardProfiles, syncIssues, transactionRewardContext } from "../shared/schema";
 import { findRewardProduct, purchaseEligible, rewardGroups, rewardEstimate, transactionEstimate } from "../shared/rewards";
@@ -14,6 +17,7 @@ import { api, apiJson, LockedError, setPin, getPin, getShowSamples, setShowSampl
 import { encryptAccessToken, decryptAccessToken, validateProductionConfig } from "./token-vault";
 import { cardName } from "../client/src/lib/format";
 import { TxnList } from "../client/src/pages/TxnList";
+import { PinContext, Shell } from "../client/src/App";
 
 // Run only with an explicitly disposable local database, never hosted storage.
 assert.equal(process.env.TURSO_DATABASE_URL, "file:/scratch/dummy.db");
@@ -282,7 +286,7 @@ test("client no longer overrides fetch and blocks shell on config failure", () =
   assert.doesNotMatch(source, /window\.fetch\s*=|previewResponseFor|PREVIEW_STATE/);
   assert.match(source, /if \(config\.isError \|\| !config\.data\)/);
   assert.match(source, /Could not reach Card Tracker/);
-  const connect = readFileSync("client/src/pages/ConnectPage.tsx", "utf8");
+  const connect = readFileSync("client/src/pages/SettingsPage.tsx", "utf8");
   assert.match(connect, /config\.data\?\.demoEnabled/);
   assert.match(connect, /window\.confirm\(`Disconnect/);
   assert.match(connect, /window\.confirm\("Disconnect all banks/);
@@ -917,4 +921,42 @@ test("activity renders sample reward estimates and alternative cards but not for
   assert.match(markup, /Estimated on this card/);
   assert.match(markup, /With Summit Travel/);
   assert.doesNotMatch(render([payload.transactions.find((t: any) => t.category === "Payment")]), /Estimated on this card/);
+});
+
+test("navigation groups linked card products and lock in Settings and the planner in Activity", async () => {
+  await fixture();
+  await routes();
+  const { payload: real } = await invoke("/api/state", undefined, "GET");
+  const { payload: sample } = await invoke("/api/state", undefined, "GET", { "x-show-samples": "true" });
+  const pin = "dummy-test-password";
+  const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
+  queryClient.setQueryData(["config", pin], { plaidConfigured: true });
+  queryClient.setQueryData(["state", pin, false], real);
+  queryClient.setQueryData(["state", pin, true], sample);
+  const render = (path: string) => renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient },
+    createElement(Router, { hook: useHashLocation, ssrPath: path },
+      createElement(PinContext.Provider, { value: { pin, setPin: () => {} } }, createElement(Shell)))));
+  try {
+    const settings = render("/settings");
+    assert.match(settings, /Connected banks[\s\S]*Disconnect bank-a[\s\S]*select-card-product-account-bank-a[\s\S]*button-lock-app/);
+    assert.match(settings, /<a(?=[^>]*href="#\/settings")(?=[^>]*aria-current="page")[^>]*>/);
+    assert.doesNotMatch(settings, /open-card-recommendation/);
+    assert.match(render("/connect"), /Connected banks/);
+    const activity = render("/activity");
+    assert.match(activity, /Activity<\/h1>[\s\S]*Which card should I use\?[\s\S]*Purchase category[\s\S]*Search merchant or category/);
+    assert.doesNotMatch(activity, /button-lock-app|select-card-product-account-bank-a/);
+    assert.match(render("/rewards"), /<details open=""[^>]*>[\s\S]*Which card should I use\?/);
+    assert.doesNotMatch(render("/"), /Which card should I use\?/);
+    assert.doesNotMatch(render("/card/account-bank-a"), /Select card product/);
+
+    setShowSamples(true);
+    const sampleSettings = render("/settings");
+    assert.match(sampleSettings, /Demo Bank[\s\S]*button-lock-app/);
+    assert.doesNotMatch(sampleSettings, /account-bank-a|Connect a bank|Disconnect all banks/);
+    const sampleActivity = render("/activity");
+    assert.match(sampleActivity, /Which card should I use\?[\s\S]*Summit Travel/);
+    assert.doesNotMatch(sampleActivity, /bank-a/);
+  } finally {
+    setShowSamples(false);
+  }
 });

@@ -17,7 +17,6 @@ import {
 } from "@/lib/format";
 import { SpendingPanel } from "./SpendingPanel";
 import { TxnList } from "./TxnList";
-import { RewardProductEditor } from "./RewardsPage";
 
 export default function CardDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -139,7 +138,6 @@ export default function CardDetailPage() {
           </Button>
         )}
       </div>}
-      {!sample && card.type === "credit" && <RewardProductEditor card={card} pin={pin} />}
 
       <SectionTitle>Payment</SectionTitle>
       <div className="rounded-xl bg-white px-4 py-1 shadow-[0_1px_2px_rgba(20,33,43,0.04)]">

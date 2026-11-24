@@ -1,5 +1,5 @@
-import { createContext, useState, useEffect, useContext } from "react";
-import { Switch, Route, Router } from "wouter";
+import { createContext, useState, useEffect } from "react";
+import { Switch, Route, Router, useLocation } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
@@ -11,11 +11,10 @@ import CardsPage from "@/pages/CardsPage";
 import CardDetailPage from "@/pages/CardDetailPage";
 import ActivityPage from "@/pages/ActivityPage";
 import SpendingPage from "@/pages/SpendingPage";
-import ConnectPage from "@/pages/ConnectPage";
-import RewardsPage from "@/pages/RewardsPage";
+import SettingsPage from "@/pages/SettingsPage";
 import { useSampleMode } from "./lib/dashboard-state";
 import { api, setPin, getPin, LockedError } from "./lib/api";
-import { CreditCard, List, PieChart, Plug, Lock } from "lucide-react";
+import { CreditCard, List, PieChart, Settings, Lock } from "lucide-react";
 import { Link } from "wouter";
 
 export const PinContext = createContext<{ pin: string; setPin: (p: string) => void }>({
@@ -24,15 +23,14 @@ export const PinContext = createContext<{ pin: string; setPin: (p: string) => vo
 });
 
 function TabBar({ current }: { current: string }) {
-  const { pin, setPin: lock } = useContext(PinContext);
   const tabs = [
     { key: "cards", label: "Cards", icon: CreditCard, href: "/" },
     { key: "activity", label: "Activity", icon: List, href: "/activity" },
     { key: "spending", label: "Spending", icon: PieChart, href: "/spending" },
-    { key: "connect", label: "Connect", icon: Plug, href: "/connect" },
+    { key: "settings", label: "Settings", icon: Settings, href: "/settings" },
   ];
   return (
-    <nav className="fixed bottom-0 left-1/2 z-40 w-full max-w-[430px] -translate-x-1/2 border-t border-[hsl(214_20%_88%)] bg-white px-2 pb-[max(10px,env(safe-area-inset-bottom))] pt-2 shadow-[0_-4px_16px_rgba(20,33,43,0.05)]">
+    <nav aria-label="Main navigation" className="fixed bottom-0 left-1/2 z-40 w-full max-w-[430px] -translate-x-1/2 border-t border-[hsl(214_20%_88%)] bg-white px-2 pb-[max(10px,env(safe-area-inset-bottom))] pt-2 shadow-[0_-4px_16px_rgba(20,33,43,0.05)]">
       <div className="flex">
         {tabs.map((t) => {
           const active = current === t.key;
@@ -41,6 +39,8 @@ function TabBar({ current }: { current: string }) {
             <Link
               key={t.key}
               href={t.href}
+              aria-current={active ? "page" : undefined}
+              data-testid={`tab-${t.key}`}
               className="flex flex-1 flex-col items-center gap-1 rounded-lg py-1 text-xs font-medium"
               style={{ color: active ? "#1F3A5F" : "#68757F" }}
             >
@@ -49,27 +49,22 @@ function TabBar({ current }: { current: string }) {
             </Link>
           );
         })}
-        {pin && (
-          <button type="button" onClick={() => lock("")} className="flex flex-1 flex-col items-center gap-1 rounded-lg py-1 text-xs text-[#68757F]">
-            <Lock size={21} /><span>Lock</span>
-          </button>
-        )}
       </div>
     </nav>
   );
 }
 
-function Shell() {
-  const [location] = useHashLocation();
+export function Shell() {
+  const [location] = useLocation();
   const sample = useSampleMode();
   const current = location.startsWith("/card")
     ? "cards"
-    : location.startsWith("/activity")
+    : location === "/activity" || location === "/rewards"
       ? "activity"
       : location.startsWith("/spending")
         ? "spending"
-        : location.startsWith("/connect")
-          ? "connect"
+        : location === "/settings" || location === "/connect"
+          ? "settings"
           : "cards";
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col bg-[#F2F4F6] shadow-[0_0_40px_rgba(20,33,43,0.08)] sm:my-0">
@@ -78,10 +73,11 @@ function Shell() {
         <Switch key={String(sample)}>
           <Route path="/" component={CardsPage} />
           <Route path="/card/:id" component={CardDetailPage} />
-          <Route path="/activity" component={ActivityPage} />
+          <Route path="/activity"><ActivityPage /></Route>
           <Route path="/spending" component={SpendingPage} />
-          <Route path="/connect" component={ConnectPage} />
-          <Route path="/rewards" component={RewardsPage} />
+          <Route path="/settings" component={SettingsPage} />
+          <Route path="/connect" component={SettingsPage} />
+          <Route path="/rewards"><ActivityPage plannerOpen /></Route>
           <Route component={NotFound} />
         </Switch>
       </main>

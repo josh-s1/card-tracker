@@ -1,10 +1,10 @@
 # Security update checks
 
 ## Rewards, sync status and sample-only mode
-- Connect → Show sample cards: only fictional cards, activity, spending, rewards and connection details; no bank controls. Turn off to restore live mode. Refresh or lock resets the mode.
+- The bottom navigation ends with Settings, not Connect or Lock. Settings → Show sample cards: only fictional cards, activity, spending, rewards and connection details; no bank controls. Turn off to restore live mode. Refresh or Lock app (at the bottom of Settings) resets the mode.
 - Cards and card detail show the last complete bank sync, failed/reconnect states and sample status.
-- Card detail → Reward rates: search, select and switch products or save custom rates; Activity estimates historical and new purchases and compares eligible alternatives. Payments, fees and refunds do not earn estimates.
-- Cards → Which card should I use?: choose category, currency and amount. Compare only the same reward units when ranking; show unknown cards separately.
+- Settings → Connected banks → Select card product below the linked card: search, select and switch products or save custom rates. Activity estimates historical and new purchases and compares eligible alternatives. Payments, fees and refunds do not earn estimates.
+- Activity → Which card should I use?: expand the planner, then choose category, currency and amount. Compare only the same reward units when ranking; show unknown cards separately. The old Connect and rewards bookmarks display Settings and Activity respectively.
 
 ## Card nicknames
 - User reports the deployed sample switch and one real bank connection/manual sync work. Do not access or modify the live database during development.

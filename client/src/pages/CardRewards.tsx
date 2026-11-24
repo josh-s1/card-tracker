@@ -1,12 +1,9 @@
-import { useContext, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
-import { PinContext } from "@/App";
 import { api } from "@/lib/api";
-import { useDashboardState, useSampleMode } from "@/lib/dashboard-state";
 import { cardName, estimateLabel } from "@/lib/format";
 import type { Account } from "@shared/schema";
 import {
@@ -14,16 +11,10 @@ import {
   type RewardRules,
 } from "@shared/rewards";
 
-export default function RewardsPage() {
-  const { pin } = useContext(PinContext);
-  const sample = useSampleMode();
-  const { data, isLoading, error } = useDashboardState(pin);
+export function CardRecommendation({ cards, sample }: { cards: Account[]; sample: boolean }) {
   const [amount, setAmount] = useState("100");
   const [category, setCategory] = useState("Dining");
   const [selectedCurrency, setCurrency] = useState("");
-  if (isLoading) return <Skeleton className="h-64 w-full rounded-2xl" />;
-  if (error || !data) return <p role="alert" className="text-sm">Could not load cards for comparison.</p>;
-  const cards = data.accounts.filter(a => a.type === "credit" && !data.items.find(i => i.id === a.itemId)?.disconnectPending);
   const currencies = Array.from(new Set(cards.map(c => c.currency)));
   const currency = currencies.includes(selectedCurrency) ? selectedCurrency : (currencies[0] ?? "USD");
   const usable = /^\d{1,8}(\.\d{1,2})?$/.test(amount) && Number(amount) > 0;
@@ -31,8 +22,6 @@ export default function RewardsPage() {
   const unconfigured = cards.filter(c => c.currency === currency && !c.rewardRules);
   return (
     <div className="space-y-4">
-      <Link href="/" className="text-sm font-semibold text-[#1F3A5F]">Back to cards</Link>
-      <h1 className="text-xl font-bold text-[#14212B]">Which card should I use?</h1>
       <div className="grid grid-cols-2 gap-3 rounded-xl bg-white p-4">
         <label className="col-span-2 space-y-1 text-sm font-medium">Purchase category
           <select value={category} onChange={e => setCategory(e.target.value)} className="block w-full rounded-md border bg-white p-2 text-sm">
@@ -64,20 +53,17 @@ export default function RewardsPage() {
           </ul>
         </section>
       ))}
-      {!!unconfigured.length && <p className="text-xs text-[#68757F]">{unconfigured.length} card(s) in {currency} still need rewards set up.</p>}
-      {!sample && !!cards.length && <section className="rounded-xl bg-white p-4">
-        <h2 className="text-sm font-semibold">Manage card rewards</h2>
-        <ul className="mt-2 space-y-3">
-          {cards.map(c => <li key={c.id}><Link href={`/card/${c.id}`} className="break-words text-sm font-medium text-[#1F3A5F]">
-            {cardName(c)} ({c.currency}) · {c.rewardRules ? "Change product or rates" : "Select card product"}
-          </Link></li>)}
-        </ul>
-      </section>}
+      {!!unconfigured.length && <p className="text-xs text-[#68757F]">
+        {unconfigured.length} card{unconfigured.length === 1 ? "" : "s"} in {currency} still need rewards set up.{" "}
+        {!sample && <Link href="/settings" className="font-semibold text-[#1F3A5F]">Select card products in Settings</Link>}
+      </p>}
     </div>
   );
 }
 
-export function RewardProductEditor({ card, pin }: { card: Account; pin: string }) {
+export const rewardProductMutationKey = ["card-reward-product"] as const;
+
+export function RewardProductEditor({ card, pin, disabled }: { card: Account; pin: string; disabled: boolean }) {
   const client = useQueryClient();
   const selected = findRewardProduct(card.rewardProductId);
   const [search, setSearch] = useState("");
@@ -90,6 +76,7 @@ export function RewardProductEditor({ card, pin }: { card: Account; pin: string 
     Object.fromEntries(Object.entries(startingCustom?.bonuses ?? {}).map(([k, v]) => [k, String(v)])),
   );
   const mutation = useMutation({
+    mutationKey: rewardProductMutationKey,
     mutationFn: (selection: { productId: string } | { rules: RewardRules | null }) => api.saveRewardRules(card.id, selection),
     onMutate: () => setNotice(""),
     onSuccess: async () => {
@@ -106,14 +93,17 @@ export function RewardProductEditor({ card, pin }: { card: Account; pin: string 
   });
   const submitCustom = (event: FormEvent) => {
     event.preventDefault();
+    if (disabled || mutation.isPending) return;
     const bonuses = Object.fromEntries(Object.entries(rates)
       .filter(([, value]) => value.trim() !== "").map(([category, value]) => [category, Number(value)]));
     mutation.mutate({ rules: { unit, base: Number(base), bonuses } });
   };
 
   return (
-    <details className="mt-3 rounded-xl bg-white p-3.5">
-      <summary className="cursor-pointer text-sm font-semibold">Reward rates · {selected?.name ?? (card.rewardRules ? "Custom" : "Select card product")}</summary>
+    <details className="mt-1 rounded-lg bg-[#F2F4F6] p-2.5">
+      <summary className="cursor-pointer break-words text-sm font-semibold text-[#1F3A5F]" data-testid={`select-card-product-${card.id}`}>
+        {selected ? `Change card product · ${selected.name}` : card.rewardRules ? "Change card product · Custom rates" : "Select card product"}
+      </summary>
       <p className="mt-2 break-words text-xs text-[#68757F]">Plaid name: {card.officialName || card.name} · {card.currency}</p>
       {selected && <p className="mt-2 text-xs leading-relaxed text-[#68757F]">
         {selected.terms} <a className="font-semibold text-[#1F3A5F] underline" href={selected.source} target="_blank" rel="noreferrer">Issuer terms</a> · Checked {selected.checked}
@@ -125,14 +115,14 @@ export function RewardProductEditor({ card, pin }: { card: Account; pin: string 
       <ul className="mt-2 space-y-2">
         {choices.map(p => <li key={p.id} className="flex flex-wrap justify-between gap-2 border-t pt-2 text-sm">
           <span>{p.name} <span className="text-xs text-[#68757F]">({p.currency === "CAD" ? "Canada" : "U.S."})</span></span>
-          <Button size="sm" variant="outline" disabled={mutation.isPending || p.id === selected?.id}
+          <Button size="sm" variant="outline" disabled={disabled || mutation.isPending || p.id === selected?.id}
             onClick={() => mutation.mutate({ productId: p.id })}>{p.id === selected?.id ? "Selected" : "Use this product"}</Button>
         </li>)}
       </ul>
       {!choices.length && <p className="mt-2 text-xs">No match in the current catalog. You can enter your own rates instead.</p>}
       <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" variant="outline" onClick={() => setCustom(!custom)}>{custom ? "Hide custom rates" : "Enter custom rates"}</Button>
-        {card.rewardRules && <Button size="sm" variant="ghost" disabled={mutation.isPending} onClick={() => mutation.mutate({ rules: null })}>Clear rewards</Button>}
+        {card.rewardRules && <Button size="sm" variant="ghost" disabled={disabled || mutation.isPending} onClick={() => mutation.mutate({ rules: null })}>Clear rewards</Button>}
       </div>
       {custom && <form onSubmit={submitCustom} className="mt-3 space-y-2">
         <p className="text-xs text-[#68757F]">Use the exact rewards program name. Enter “Cash back” for percentage rates. Only enter bonuses that apply to the whole category; caps and special offers aren’t tracked here.</p>
@@ -143,7 +133,7 @@ export function RewardProductEditor({ card, pin }: { card: Account; pin: string 
             <Input type="number" min="0" max="50" step="0.01" placeholder="Base" value={rates[category] ?? ""} onChange={e => setRates(v => ({ ...v, [category]: e.target.value }))} />
           </label>)}
         </div>
-        <Button size="sm" type="submit" disabled={mutation.isPending}>Save custom rates</Button>
+        <Button size="sm" type="submit" disabled={disabled || mutation.isPending}>Save custom rates</Button>
       </form>}
       {notice && <p role="status" className="mt-2 text-xs">{notice}</p>}
       {mutation.error && <p role="alert" className="mt-2 text-xs text-[#8A3B3B]">{mutation.error.message}</p>}

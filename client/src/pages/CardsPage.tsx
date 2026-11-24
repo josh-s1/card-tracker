@@ -57,9 +57,6 @@ export default function CardsPage() {
         </div>
       )}
 
-      <Link href="/rewards" className="mt-4 block rounded-xl border border-[#D9DEE2] bg-white px-4 py-3 text-sm font-semibold text-[#1F3A5F]">
-        Which card should I use?
-      </Link>
       <div className="mt-6 space-y-3.5">
         {cards.map((c) => {
           const util = c.limitCents

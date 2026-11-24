@@ -1,14 +1,15 @@
 import { useContext, useMemo, useState } from "react";
-import { Link } from "wouter";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Search } from "lucide-react";
 import { PinContext } from "@/App";
-import { useDashboardState } from "@/lib/dashboard-state";
+import { useDashboardState, useSampleMode } from "@/lib/dashboard-state";
 import { cardName } from "@/lib/format";
 import { TxnList } from "./TxnList";
+import { CardRecommendation } from "./CardRewards";
 
-export default function ActivityPage() {
+export default function ActivityPage({ plannerOpen }: { plannerOpen?: boolean }) {
   const { pin } = useContext(PinContext);
+  const sample = useSampleMode();
   const { data, isLoading, error } = useDashboardState(pin);
   const [card, setCard] = useState<string>("all");
   const [q, setQ] = useState("");
@@ -23,6 +24,7 @@ export default function ActivityPage() {
   if (!data) return null;
 
   const cards = data.accounts;
+  const rewardCards = cards.filter(c => c.type === "credit" && !data.items.find(i => i.id === c.itemId)?.disconnectPending);
   const ql = q.toLowerCase();
   const txns = data.transactions.filter(
     (t) =>
@@ -35,6 +37,15 @@ export default function ActivityPage() {
   return (
     <div>
       <h1 className="mb-3 text-[15px] font-semibold text-[#68757F]">Activity</h1>
+
+      <details open={plannerOpen} className="mb-3 rounded-xl border border-[#D9DEE2] bg-white">
+        <summary className="cursor-pointer px-3 py-3 text-sm font-semibold text-[#1F3A5F]" data-testid="open-card-recommendation">
+          Which card should I use?
+        </summary>
+        <div className="border-t border-[#E7EBEE] bg-[#F2F4F6] p-3">
+          <CardRecommendation cards={rewardCards} sample={sample} />
+        </div>
+      </details>
 
       <label className="mb-3 flex items-center gap-2 rounded-xl border border-[#D9DEE2] bg-white px-3 shadow-[0_1px_2px_rgba(20,33,43,0.04)]">
         <Search size={18} className="flex-none text-[#68757F]" />
@@ -69,11 +80,9 @@ export default function ActivityPage() {
       </div>
 
       <p className="mb-2 text-xs text-[#68757F]">
-        Estimates use the currently selected rates, not issuer-posted points. Older purchases assume the card’s billing currency and may only have broad categories.{" "}
-        <Link href="/rewards" className="font-semibold text-[#1F3A5F]">Compare cards</Link>
+        Estimates use the currently selected rates, not issuer-posted points. Older purchases assume the card’s billing currency and may only have broad categories.
       </p>
-      <TxnList txns={txns} showCard accountById={accountById}
-        rewardCards={cards.filter(c => !data.items.find(i => i.id === c.itemId)?.disconnectPending)} />
+      <TxnList txns={txns} showCard accountById={accountById} rewardCards={rewardCards} />
     </div>
   );
 }

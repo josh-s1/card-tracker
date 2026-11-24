@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api, getShowSamples, subscribeSampleMode } from "./api";
 import type { AppState } from "./format";
 
-export const useSampleMode = () => useSyncExternalStore(subscribeSampleMode, getShowSamples);
+export const useSampleMode = () => useSyncExternalStore(subscribeSampleMode, getShowSamples, getShowSamples);
 
 export function useDashboardState(pin: string) {
   const sample = useSampleMode();

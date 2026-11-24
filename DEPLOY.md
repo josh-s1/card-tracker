@@ -82,14 +82,15 @@ account_preferences table if needed; existing tables/financial rows are unchange
 Removing a bank also removes its stored nicknames. No new environment variable
 or manual SQL is required.
 
-Use Connect → Show sample cards to open a read-only fictional dataset across the
+Use Settings → Show sample cards to open a read-only fictional dataset across the
 app, including when real banks are connected. Sample mode does not query or
 change real records; refresh or lock returns to real mode. No new environment
 variables are needed.
 
 Cards show the last complete bank sync and whether the latest attempt failed or
-needs a reconnect. On card detail, open Reward rates to select a listed issuer
-product, switch products, or enter custom rates. Activity estimates rewards on
+needs a reconnect. In Settings → Connected banks, open Select card product under
+a linked card to choose or change a product or enter custom rates. Lock app is
+at the bottom of Settings. Activity includes Which card should I use? and estimates rewards on
 posted purchases with usable categories and compares configured cards in the
 same billing currency. The picker links to issuer terms and the catalog check
 date. Catalog rates update with releases; rates do not automatically scrape

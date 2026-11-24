@@ -1,15 +1,15 @@
 import { useContext, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { PinContext } from "@/App";
 import { api, loadPlaidLink, setShowSamples } from "@/lib/api";
 import { useDashboardState, useSampleMode } from "@/lib/dashboard-state";
-import { bankSyncLabel } from "@/lib/format";
+import { bankSyncLabel, cardName } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
-import { Plug, RefreshCw, Trash2, Sparkles, ShieldCheck } from "lucide-react";
-import { Link } from "wouter";
+import { Lock, Plug, RefreshCw, Trash2, Sparkles, ShieldCheck } from "lucide-react";
+import { RewardProductEditor, rewardProductMutationKey } from "./CardRewards";
 
 interface Config {
   plaidConfigured: boolean;
@@ -18,12 +18,29 @@ interface Config {
   demoEnabled: boolean;
 }
 
-export default function ConnectPage() {
+export default function SettingsPage() {
+  const { pin, setPin } = useContext(PinContext);
+
+  return (
+    <div>
+      <h1 className="mb-3 text-[15px] font-semibold text-[#68757F]">Settings</h1>
+      <BankConnections />
+      {pin && <div className="mt-6 border-t border-[#D9DEE2] pt-4">
+        <Button type="button" variant="outline" className="w-full border-[#D9DEE2]" onClick={() => setPin("")} data-testid="button-lock-app">
+          <Lock size={16} className="mr-1.5" /> Lock app
+        </Button>
+      </div>}
+    </div>
+  );
+}
+
+function BankConnections() {
   const { pin } = useContext(PinContext);
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [linkBusy, setLinkBusy] = useState(false);
   const samplesVisible = useSampleMode();
+  const savingProduct = useIsMutating({ mutationKey: rewardProductMutationKey }) > 0;
 
   const config = useQuery<Config>({
     queryKey: ["config", pin],
@@ -132,14 +149,13 @@ export default function ConnectPage() {
       </div>
       <Switch id="show-sample-cards" aria-describedby="sample-visibility-description"
         checked={samplesVisible} onCheckedChange={setShowSamples}
-        disabled={linkBusy || syncMutation.isPending || removeMutation.isPending || clearReal.isPending || demoSeed.isPending}
+        disabled={linkBusy || savingProduct || syncMutation.isPending || removeMutation.isPending || clearReal.isPending || demoSeed.isPending}
         data-testid="switch-show-sample-cards" />
     </div>
   );
 
   if (samplesVisible) return (
     <div>
-      <h1 className="mb-3 text-[15px] font-semibold text-[#68757F]">Connect</h1>
       {sampleSwitch}
       <p className="rounded-xl bg-white p-3.5 text-sm text-[#41525E]">
         Demo Bank · Fictional cards and transactions only. Turn samples off to manage real bank connections.
@@ -169,7 +185,7 @@ export default function ConnectPage() {
 
   return (
     <div>
-      <h1 className="mb-1 text-[15px] font-semibold text-[#68757F]">Connect</h1>
+      <h2 className="mb-1 text-[15px] font-semibold">Bank connections</h2>
       <p className="mb-5 text-sm text-[#68757F]">
         Link your banks, then use Sync now to refresh. Verify balances and payment
         details with your bank before making a payment.
@@ -220,54 +236,58 @@ export default function ConnectPage() {
         </div>
       )}
 
-      {data.accounts.some(a => a.type === "credit" && !a.rewardRules) && (
-        <Link href="/rewards" className="mt-3 block rounded-xl border border-[#D9DEE2] bg-white px-4 py-3 text-sm font-semibold text-[#1F3A5F]">
-          Set up rewards for your linked cards
-        </Link>
-      )}
       {realItems.length > 0 && (
         <>
-          <div className="mb-2 mt-6 text-[15px] font-semibold">
+          <h2 className="mb-2 mt-6 text-[15px] font-semibold">
             Connected banks
-          </div>
+          </h2>
           <div className="space-y-2">
             {realItems.map((item) => {
-              const nAccounts = data.accounts.filter(
-                (a) => a.itemId === item.id,
-              ).length;
+              const accounts = data.accounts.filter((a) => a.itemId === item.id);
+              const nAccounts = accounts.length;
               const nTxns = data.transactions.filter(
                 (t) => t.itemId === item.id,
               ).length;
               return (
-                <div
+                <section
                   key={item.id}
-                  className="flex items-center gap-3 rounded-xl bg-white p-3.5 shadow-[0_1px_2px_rgba(20,33,43,0.04)]"
+                  className="rounded-xl bg-white p-3.5 shadow-[0_1px_2px_rgba(20,33,43,0.04)]"
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[15px] font-semibold">
-                      {item.institutionName}
+                  <div className="flex items-center gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="break-words text-[15px] font-semibold">
+                        {item.institutionName}
+                      </div>
+                      <div className="mt-0.5 text-xs text-[#68757F]">
+                        {nAccounts} card{nAccounts === 1 ? "" : "s"} ·{" "}
+                        {nTxns} transaction{nTxns === 1 ? "" : "s"}
+                        {` · ${bankSyncLabel(item)}`}
+                      </div>
                     </div>
-                    <div className="mt-0.5 text-xs text-[#68757F]">
-                      {nAccounts} card{nAccounts === 1 ? "" : "s"} ·{" "}
-                      {nTxns} transaction{nTxns === 1 ? "" : "s"}
-                      {` · ${bankSyncLabel(item)}`}
-                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Disconnect ${item.institutionName}`}
+                      disabled={savingProduct || removeMutation.isPending || clearReal.isPending}
+                      onClick={() => {
+                        if (window.confirm(`Disconnect ${item.institutionName}? This revokes bank access and deletes its cards and transactions from this app.`)) {
+                          removeMutation.mutate(item.id);
+                        }
+                      }}
+                      data-testid={`button-remove-${item.id}`}
+                    >
+                      <Trash2 size={16} className="text-[#B23B3B]" />
+                    </Button>
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`Disconnect ${item.institutionName}`}
-                    disabled={removeMutation.isPending || clearReal.isPending}
-                    onClick={() => {
-                      if (window.confirm(`Disconnect ${item.institutionName}? This revokes bank access and deletes its cards and transactions from this app.`)) {
-                        removeMutation.mutate(item.id);
-                      }
-                    }}
-                    data-testid={`button-remove-${item.id}`}
-                  >
-                    <Trash2 size={16} className="text-[#B23B3B]" />
-                  </Button>
-                </div>
+                  {!item.disconnectPending && accounts.filter(a => a.type === "credit").map(card => (
+                    <div key={card.id} className="mt-3 border-t border-[#E7EBEE] pt-3">
+                      <h3 className="break-words text-sm font-medium">
+                        {cardName(card)}{card.mask ? ` · •••• ${card.mask}` : ""}
+                      </h3>
+                      <RewardProductEditor card={card} pin={pin} disabled={removeMutation.isPending || clearReal.isPending} />
+                    </div>
+                  ))}
+                </section>
               );
             })}
           </div>
@@ -306,7 +326,7 @@ export default function ConnectPage() {
                 clearReal.mutate();
               }
             }}
-            disabled={clearReal.isPending || removeMutation.isPending || realItems.length === 0}
+            disabled={savingProduct || clearReal.isPending || removeMutation.isPending || realItems.length === 0}
           >
             Disconnect all banks
           </Button>
